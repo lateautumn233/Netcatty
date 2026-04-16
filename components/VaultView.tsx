@@ -361,6 +361,8 @@ const VaultViewInner: React.FC<VaultViewProps> = ({
     if (effective.protocol === "ssh" || !effective.protocol) count++;
     // Mosh adds another option
     if (effective.moshEnabled) count++;
+    // EternalTerminal adds another option
+    if (effective.etEnabled) count++;
     // Telnet adds another option
     if (effective.telnetEnabled) count++;
     // If protocol is explicitly telnet (not ssh), count it
@@ -390,9 +392,10 @@ const VaultViewInner: React.FC<VaultViewProps> = ({
       if (protocolSelectHost) {
         const hostWithProtocol: Host = {
           ...protocolSelectHost,
-          protocol: protocol === "mosh" ? "ssh" : protocol,
+          protocol: protocol === "mosh" || protocol === "et" ? "ssh" : protocol,
           port,
           moshEnabled: protocol === "mosh",
+          etEnabled: protocol === "et",
         };
         onConnect(hostWithProtocol);
         setProtocolSelectHost(null);

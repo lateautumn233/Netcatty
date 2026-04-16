@@ -253,7 +253,8 @@ const buildAITerminalSessionInfo = (
     shellType: session?.shellType && session.shellType !== 'unknown' ? session.shellType : undefined,
     // Suppress deviceType for Mosh sessions — Mosh requires a shell-backed PTY
     // and cannot connect to vendor CLIs, so network device mode doesn't apply.
-    deviceType: (session?.moshEnabled || host?.moshEnabled) ? undefined : host?.deviceType,
+    // Same applies to EternalTerminal sessions.
+    deviceType: (session?.moshEnabled || host?.moshEnabled || session?.etEnabled || host?.etEnabled) ? undefined : host?.deviceType,
     connected: session?.status === 'connected',
   };
 };
@@ -546,6 +547,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
             protocol: session.protocol ?? host.protocol,
             port: session.port ?? host.port,
             moshEnabled: session.moshEnabled ?? host.moshEnabled,
+            etEnabled: session.etEnabled ?? host.etEnabled,
           }
         : {
             // Quick Connect / temporary session — build minimal host from session data
@@ -918,11 +920,13 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
         const protocol = session.protocol ?? existingHost.protocol;
         const port = session.port ?? existingHost.port;
         const moshEnabled = session.moshEnabled ?? existingHost.moshEnabled;
+        const etEnabled = session.etEnabled ?? existingHost.etEnabled;
 
         if (
           protocol === existingHost.protocol &&
           port === existingHost.port &&
-          moshEnabled === existingHost.moshEnabled
+          moshEnabled === existingHost.moshEnabled &&
+          etEnabled === existingHost.etEnabled
         ) {
           map.set(session.id, existingHost);
         } else {
@@ -931,6 +935,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
             protocol,
             port,
             moshEnabled,
+            etEnabled,
           });
         }
       } else {
@@ -946,6 +951,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
           tags: [],
           protocol: session.protocol ?? 'local' as const,
           moshEnabled: session.moshEnabled,
+          etEnabled: session.etEnabled,
           charset: session.charset,
           localShell: session.localShell,
           localShellArgs: session.localShellArgs,
