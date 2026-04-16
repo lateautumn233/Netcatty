@@ -138,6 +138,7 @@ export const useSessionState = () => {
       port: host.port,
       moshEnabled: host.moshEnabled,
       etEnabled: host.etEnabled,
+      etPort: host.etPort,
       charset: host.charset,
     };
     setSessions(prev => [...prev, newSession]);

@@ -1578,6 +1578,28 @@ const HostDetailsPanel: React.FC<HostDetailsPanelProps> = ({
               }
             }}
           />
+          {form.etEnabled && (
+            <>
+              <div className="flex items-center gap-2 bg-secondary/70 border border-border/70 rounded-md px-2 py-1">
+                <span className="text-xs text-muted-foreground">{t("hostDetails.et.serverPort")}</span>
+                <Input
+                  type="number"
+                  value={form.etPort || 2022}
+                  onChange={(e) => update("etPort", Number(e.target.value))}
+                  className="h-8 w-16 text-center"
+                  min={1}
+                  max={65535}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">{t("hostDetails.et.serverPort.desc")}</p>
+              <Input
+                placeholder={t("hostDetails.et.terminalPath.placeholder")}
+                value={form.etTerminalPath || ""}
+                onChange={(e) => update("etTerminalPath", e.target.value || undefined)}
+                className="h-8 text-xs font-mono"
+              />
+            </>
+          )}
         </Card>
 
         {/* Agent Forwarding */}
