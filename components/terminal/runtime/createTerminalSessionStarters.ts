@@ -32,6 +32,7 @@ type TerminalBackendApi = {
   backendAvailable: () => boolean;
   telnetAvailable: () => boolean;
   moshAvailable: () => boolean;
+  etAvailable: () => boolean;
   localAvailable: () => boolean;
   serialAvailable: () => boolean;
   execAvailable: () => boolean;
@@ -41,6 +42,9 @@ type TerminalBackendApi = {
   ) => Promise<string>;
   startMoshSession: (
     options: Parameters<NonNullable<NetcattyBridge["startMoshSession"]>>[0],
+  ) => Promise<string>;
+  startEtSession: (
+    options: Parameters<NonNullable<NetcattyBridge["startEtSession"]>>[0],
   ) => Promise<string>;
   startLocalSession: (
     options: Parameters<NonNullable<NetcattyBridge["startLocalSession"]>>[0],
@@ -936,6 +940,57 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
     }
   };
 
+  const startEt = async (term: XTerm) => {
+    if (!ctx.terminalBackend.etAvailable()) {
+      ctx.setError("EternalTerminal bridge unavailable. Please run the desktop build.");
+      term.writeln("\r\n[EternalTerminal bridge unavailable. Please run the desktop build.]");
+      ctx.updateStatus("disconnected");
+      return;
+    }
+
+    try {
+      const etEnv = buildTermEnv(ctx.host, ctx.terminalSettings);
+      const id = await ctx.terminalBackend.startEtSession({
+        sessionId: ctx.sessionId,
+        hostname: ctx.host.hostname,
+        username: ctx.host.username || "root",
+        port: ctx.host.port || 22,
+        etPort: ctx.host.etPort,
+        terminalPath: ctx.host.etTerminalPath,
+        agentForwarding: ctx.host.agentForwarding,
+        cols: term.cols,
+        rows: term.rows,
+        charset: ctx.host.charset,
+        env: etEnv,
+        sessionLog: ctx.sessionLog?.enabled ? ctx.sessionLog : undefined,
+      });
+
+      attachSessionToTerminal(ctx, term, id, {
+        onExitMessage: (evt) =>
+          `\r\n[EternalTerminal session closed${evt?.exitCode !== undefined ? ` (code ${evt.exitCode})` : ""}]`,
+      });
+
+      const commandToRun = ctx.startupCommand || ctx.host.startupCommand;
+      if (commandToRun && !ctx.hasRunStartupCommandRef.current) {
+        ctx.hasRunStartupCommandRef.current = true;
+        const scheduledSessionId = id;
+        setTimeout(() => {
+          if (!ctx.sessionRef.current || ctx.sessionRef.current !== scheduledSessionId) return;
+          const suffix = ctx.noAutoRun ? '' : '\r';
+          ctx.terminalBackend.writeToSession(ctx.sessionRef.current, `${commandToRun}${suffix}`);
+          if (!ctx.noAutoRun && ctx.onCommandExecuted) {
+            ctx.onCommandExecuted(commandToRun, ctx.host.id, ctx.host.label, ctx.sessionId);
+          }
+        }, 600);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      ctx.setError(message);
+      term.writeln(`\r\n[Failed to start EternalTerminal: ${message}]`);
+      ctx.updateStatus("disconnected");
+    }
+  };
+
   const startLocal = async (term: XTerm) => {
     if (!ctx.terminalBackend.localAvailable()) {
       ctx.setError("Local shell bridge unavailable. Please run the desktop build.");
@@ -1070,5 +1125,5 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
     }
   };
 
-  return { startSSH, startTelnet, startMosh, startLocal, startSerial };
+  return { startSSH, startTelnet, startMosh, startEt, startLocal, startSerial };
 };

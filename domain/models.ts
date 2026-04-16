@@ -31,7 +31,7 @@ export interface EnvVar {
 }
 
 // Protocol type for connections
-export type HostProtocol = 'ssh' | 'telnet' | 'mosh' | 'local' | 'serial';
+export type HostProtocol = 'ssh' | 'telnet' | 'mosh' | 'et' | 'local' | 'serial';
 
 // Serial port configuration
 export type SerialParity = 'none' | 'even' | 'odd' | 'mark' | 'space';
@@ -55,6 +55,8 @@ interface ProtocolConfig {
   enabled: boolean;
   // Mosh-specific
   moshServerPath?: string;
+  // EternalTerminal-specific
+  etPort?: number;
   // Protocol-specific theme override
   theme?: string;
 }
@@ -99,6 +101,9 @@ export interface Host {
   charset?: string;
   moshEnabled?: boolean;
   moshServerPath?: string; // Custom mosh-server path (e.g., /usr/local/bin/mosh-server)
+  etEnabled?: boolean;
+  etPort?: number; // EternalTerminal server port (default: 2022)
+  etTerminalPath?: string; // Custom etterminal path on remote (e.g., /usr/local/bin/etterminal)
   theme?: string;
   themeOverride?: boolean; // Explicitly override the global terminal theme for this host
   fontFamily?: string; // Terminal font family for this host
@@ -223,6 +228,9 @@ export interface GroupConfig {
   charset?: string;
   moshEnabled?: boolean;
   moshServerPath?: string;
+  etEnabled?: boolean;
+  etPort?: number;
+  etTerminalPath?: string;
   telnetEnabled?: boolean;
   telnetPort?: number;
   telnetUsername?: string;
@@ -712,6 +720,7 @@ export interface TerminalSession {
   protocol?: 'ssh' | 'telnet' | 'local' | 'serial';
   port?: number;
   moshEnabled?: boolean;
+  etEnabled?: boolean;
   shellType?: 'posix' | 'fish' | 'powershell' | 'cmd' | 'unknown';
   charset?: string; // Connection-time charset override (e.g. for quick-connect serial)
   // Serial-specific connection settings
@@ -891,7 +900,7 @@ export interface ConnectionLog {
   hostLabel: string; // Display label (e.g., 'Local Terminal' or host label)
   hostname: string; // Target hostname or 'localhost'
   username: string; // SSH username or system username
-  protocol: 'ssh' | 'telnet' | 'local' | 'mosh' | 'serial';
+  protocol: 'ssh' | 'telnet' | 'local' | 'mosh' | 'et' | 'serial';
   startTime: number; // Connection start timestamp
   endTime?: number; // Connection end timestamp (undefined if still active)
   localUsername: string; // System username of the local user
