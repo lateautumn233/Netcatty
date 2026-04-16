@@ -29,6 +29,7 @@ const {
 const sessionLogStreamManager = require("./sessionLogStreamManager.cjs");
 const { trackSessionIdlePrompt } = require("./ai/shellUtils.cjs");
 const { createZmodemSentry } = require("./zmodemHelper.cjs");
+const { execOnEtSession } = require("./terminalBridge.cjs");
 
 // Default SSH key names in priority order (preferred keys tried first)
 const PREFERRED_KEY_NAMES = ["id_ed25519", "id_ecdsa", "id_rsa"];
@@ -1938,10 +1939,19 @@ async function getSessionRemoteInfo(_event, payload) {
 async function getSessionDistroInfo(_event, payload) {
   const { sessionId } = payload || {};
   const session = sessions.get(sessionId);
-  if (!session || !session.conn) {
-    return { success: false, error: 'Session not found or not connected' };
+  if (!session) {
+    return { success: false, error: 'Session not found' };
   }
   const command = "cat /etc/os-release 2>/dev/null || uname -a";
+
+  // ET session: use system ssh for exec
+  if (!session.conn && session.type === 'et' && session.sshUserHost) {
+    return execOnEtSession(session, command, 5000);
+  }
+
+  if (!session.conn) {
+    return { success: false, error: 'Session not connected' };
+  }
   return new Promise((resolve) => {
     let settled = false;
     const settle = (result) => {
@@ -2220,11 +2230,15 @@ async function getServerStats(event, payload) {
   const { sessionId } = payload;
   const session = sessions.get(sessionId);
 
-  if (!session || !session.conn) {
-    return { success: false, error: 'Session not found or not connected' };
+  if (!session) {
+    return { success: false, error: 'Session not found' };
   }
 
-  const conn = session.conn;
+  // Determine execution method based on session type
+  const useEtExec = !session.conn && session.type === 'et' && session.sshUserHost;
+  if (!session.conn && !useEtExec) {
+    return { success: false, error: 'Session not connected' };
+  }
 
   // macOS stats command: uses sysctl, vm_stat, top, ps, df, netstat
   // CPU reported as direct percentage (top computes delta internally)
@@ -2286,313 +2300,335 @@ async function getServerStats(event, payload) {
 
   // Auto-detect OS via uname — only Linux and macOS are supported
   const statsCommand = `ostype=$(uname -s 2>/dev/null || echo "Unknown"); if [ "$ostype" = "Darwin" ]; then ${macosStatsCommand}; elif [ "$ostype" = "Linux" ]; then ${linuxStatsCommand}; else echo "UNSUPPORTED_OS:$ostype"; fi`;
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      resolve({ success: false, error: 'Timeout getting server stats' });
-    }, 5000);
 
-    conn.exec(statsCommand, (err, stream) => {
-      if (err) {
-        clearTimeout(timeout);
-        resolve({ success: false, error: err.message });
-        return;
+  // Execute the stats command — via ssh2 conn.exec for SSH sessions,
+  // or via system ssh for ET sessions.
+  let execResult;
+  if (useEtExec) {
+    try {
+      execResult = await execOnEtSession(session, statsCommand, 5000);
+      if (!execResult.success) {
+        return { success: false, error: execResult.error || 'ET exec failed' };
       }
+    } catch (err) {
+      return { success: false, error: err.message || 'ET exec failed' };
+    }
+  } else {
+    try {
+      execResult = await new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+          resolve({ success: false, error: 'Timeout getting server stats' });
+        }, 5000);
 
-      let stdout = '';
-      let stderr = '';
-
-      stream.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      stream.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      stream.on('close', () => {
-        clearTimeout(timeout);
-
-        // Parse the output
-        const output = stdout.trim();
-
-        // Unsupported OS — stop polling this session
-        if (output.startsWith('UNSUPPORTED_OS:')) {
-          resolve({ success: false, error: `Server stats not supported on this OS (${output.substring(15)})` });
-          return;
-        }
-
-        const parts = output.split('|');
-
-        let cpuDirect = null;    // macOS: direct CPU percentage from top
-        let cpuRawTotal = null;
-        let cpuRawIdle = null;
-        let cpuPerCoreRaw = [];  // Array of { total, idle }
-        let cpuCores = null;
-        let memTotal = null;
-        let memFree = null;
-        let memBuffers = null;
-        let memCached = null;
-        let memUsed = null;
-        let swapTotal = null;
-        let swapUsed = null;
-        let topProcesses = [];  // Array of { pid, memPercent, command }
-        let disks = [];  // Array of { mountPoint, used, total, percent }
-        let networkInterfaces = [];  // Array of { name, rxBytes, txBytes }
-
-        for (const part of parts) {
-          if (part.startsWith('CPU:')) {
-            // macOS: top reports CPU% directly (no delta needed)
-            const val = parseFloat(part.substring(4).trim());
-            if (!isNaN(val)) cpuDirect = Math.min(100, Math.max(0, Math.round(val)));
-          } else if (part.startsWith('CPURAW:')) {
-            const rawParts = part.substring(7).trim().split(/\s+/);
-            if (rawParts.length >= 2) {
-              cpuRawTotal = parseInt(rawParts[0], 10);
-              cpuRawIdle = parseInt(rawParts[1], 10);
-            }
-          } else if (part.startsWith('CORES:')) {
-            const coreStr = part.substring(6).trim();
-            const val = parseInt(coreStr, 10);
-            if (!isNaN(val) && val > 0) cpuCores = val;
-          } else if (part.startsWith('PERCORERAW:')) {
-            const coreStr = part.substring(11).trim();
-            if (coreStr && coreStr !== '') {
-              cpuPerCoreRaw = coreStr.split(',').map(v => {
-                const coreParts = v.trim().split(':');
-                if (coreParts.length >= 2) {
-                  const total = parseInt(coreParts[0], 10);
-                  const idle = parseInt(coreParts[1], 10);
-                  if (!isNaN(total) && !isNaN(idle)) {
-                    return { total, idle };
-                  }
-                }
-                return null;
-              }).filter(v => v !== null);
-            }
-          } else if (part.startsWith('MEMINFO:')) {
-            const memParts = part.substring(8).trim().split(/\s+/);
-            if (memParts.length >= 4) {
-              const total = parseInt(memParts[0], 10);
-              const free = parseInt(memParts[1], 10);
-              const buffers = parseInt(memParts[2], 10);
-              const cached = parseInt(memParts[3], 10);
-              if (!isNaN(total)) memTotal = total;
-              if (!isNaN(free)) memFree = free;
-              if (!isNaN(buffers)) memBuffers = buffers;
-              if (!isNaN(cached)) memCached = cached;
-              // Calculate used memory (excluding buffers/cache)
-              if (memTotal !== null && memFree !== null && memBuffers !== null && memCached !== null) {
-                memUsed = memTotal - memFree - memBuffers - memCached;
-                if (memUsed < 0) memUsed = 0;
-              }
-              // Parse swap info (fields 5 and 6)
-              if (memParts.length >= 6) {
-                const st = parseInt(memParts[4], 10);
-                const sf = parseInt(memParts[5], 10);
-                if (!isNaN(st)) swapTotal = st;
-                if (!isNaN(sf)) {
-                  swapUsed = (swapTotal !== null) ? swapTotal - sf : null;
-                  if (swapUsed !== null && swapUsed < 0) swapUsed = 0;
-                }
-              }
-            }
-          } else if (part.startsWith('PROCS:')) {
-            const procsStr = part.substring(6).trim();
-            if (procsStr && procsStr !== '') {
-              const procEntries = procsStr.split(',');
-              for (const entry of procEntries) {
-                const procParts = entry.split(';');  // Using ; as delimiter
-                if (procParts.length >= 3) {
-                  const pid = procParts[0];
-                  const memPercent = parseFloat(procParts[1]);
-                  const command = procParts.slice(2).join(';');  // Command might contain semicolons
-                  if (!isNaN(memPercent)) {
-                    topProcesses.push({ pid, memPercent, command });
-                  }
-                }
-              }
-            }
-          } else if (part.startsWith('DISKS:')) {
-            const disksStr = part.substring(6).trim();
-            if (disksStr && disksStr !== '') {
-              const diskEntries = disksStr.split(',');
-              for (const entry of diskEntries) {
-                const diskParts = entry.split(':');
-                if (diskParts.length >= 4) {
-                  const mountPoint = diskParts[0];
-                  const used = parseInt(diskParts[1], 10);
-                  const total = parseInt(diskParts[2], 10);
-                  const percent = parseInt(diskParts[3], 10);
-                  if (!isNaN(used) && !isNaN(total) && !isNaN(percent)) {
-                    disks.push({ mountPoint, used, total, percent });
-                  }
-                }
-              }
-            }
-          } else if (part.startsWith('NET:')) {
-            const netStr = part.substring(4).trim();
-            if (netStr && netStr !== '') {
-              const netEntries = netStr.split(',');
-              for (const entry of netEntries) {
-                const netParts = entry.split(':');
-                if (netParts.length >= 3) {
-                  const name = netParts[0];
-                  const rxBytes = parseInt(netParts[1], 10);
-                  const txBytes = parseInt(netParts[2], 10);
-                  if (!isNaN(rxBytes) && !isNaN(txBytes)) {
-                    networkInterfaces.push({ name, rxBytes, txBytes });
-                  }
-                }
-              }
-            }
+        session.conn.exec(statsCommand, (err, stream) => {
+          if (err) {
+            clearTimeout(timeout);
+            resolve({ success: false, error: err.message });
+            return;
           }
-        }
 
-        // Calculate network speed based on previous reading
-        const now = Date.now();
-        const prevNet = session.prevNetStats || { interfaces: [], timestamp: 0 };
-        const timeDelta = (now - prevNet.timestamp) / 1000; // seconds
+          let stdout = '';
+          let stderr = '';
 
-        let netRxSpeed = 0;  // bytes per second
-        let netTxSpeed = 0;  // bytes per second
-        const netInterfaces = [];
-
-        if (timeDelta > 0 && prevNet.interfaces.length > 0) {
-          for (const iface of networkInterfaces) {
-            const prevIface = prevNet.interfaces.find(p => p.name === iface.name);
-            if (prevIface) {
-              const rxDelta = iface.rxBytes - prevIface.rxBytes;
-              const txDelta = iface.txBytes - prevIface.txBytes;
-              // Only count positive deltas (handles counter reset)
-              const rxSpeed = rxDelta > 0 ? Math.round(rxDelta / timeDelta) : 0;
-              const txSpeed = txDelta > 0 ? Math.round(txDelta / timeDelta) : 0;
-              netRxSpeed += rxSpeed;
-              netTxSpeed += txSpeed;
-              netInterfaces.push({
-                name: iface.name,
-                rxBytes: iface.rxBytes,
-                txBytes: iface.txBytes,
-                rxSpeed,
-                txSpeed,
-              });
-            } else {
-              netInterfaces.push({
-                name: iface.name,
-                rxBytes: iface.rxBytes,
-                txBytes: iface.txBytes,
-                rxSpeed: 0,
-                txSpeed: 0,
-              });
-            }
-          }
-        } else {
-          // First reading - no speed data yet
-          for (const iface of networkInterfaces) {
-            netInterfaces.push({
-              name: iface.name,
-              rxBytes: iface.rxBytes,
-              txBytes: iface.txBytes,
-              rxSpeed: 0,
-              txSpeed: 0,
-            });
-          }
-        }
-
-        // Store current reading for next calculation
-        session.prevNetStats = {
-          interfaces: networkInterfaces,
-          timestamp: now,
-        };
-
-        // Calculate CPU usage based on delta from previous reading
-        const prevCpu = session.prevCpuStats || { total: 0, idle: 0, perCore: [], timestamp: 0 };
-        let cpu = null;
-        let cpuPerCore = [];
-
-        if (cpuRawTotal !== null && cpuRawIdle !== null && prevCpu.total > 0) {
-          const totalDelta = cpuRawTotal - prevCpu.total;
-          const idleDelta = cpuRawIdle - prevCpu.idle;
-          if (totalDelta > 0) {
-            // CPU% = 100 - (idleDelta / totalDelta * 100)
-            cpu = Math.round(100 - (idleDelta / totalDelta * 100));
-            // Clamp to valid range
-            if (cpu < 0) cpu = 0;
-            if (cpu > 100) cpu = 100;
-          }
-        }
-
-        // macOS: use direct percentage from top (no delta needed)
-        if (cpu === null && cpuDirect !== null) {
-          cpu = cpuDirect;
-        }
-
-        // Calculate per-core CPU usage from deltas
-        if (cpuPerCoreRaw.length > 0 && prevCpu.perCore.length > 0) {
-          cpuPerCore = cpuPerCoreRaw.map((core, index) => {
-            const prevCore = prevCpu.perCore[index];
-            if (prevCore) {
-              const totalDelta = core.total - prevCore.total;
-              const idleDelta = core.idle - prevCore.idle;
-              if (totalDelta > 0) {
-                let usage = Math.round(100 - (idleDelta / totalDelta * 100));
-                if (usage < 0) usage = 0;
-                if (usage > 100) usage = 100;
-                return usage;
-              }
-            }
-            return 0;
+          stream.on('data', (data) => {
+            stdout += data.toString();
           });
-        } else if (cpuPerCoreRaw.length > 0) {
-          // First reading - no delta data yet, return zeros
-          cpuPerCore = cpuPerCoreRaw.map(() => 0);
-        }
 
-        // Store current CPU reading for next calculation
-        session.prevCpuStats = {
-          total: cpuRawTotal || 0,
-          idle: cpuRawIdle || 0,
-          perCore: cpuPerCoreRaw,
-          timestamp: now,
-        };
+          stream.stderr.on('data', (data) => {
+            stderr += data.toString();
+          });
 
-        // For backward compatibility, extract root disk info
-        const rootDisk = disks.find(d => d.mountPoint === '/');
-        const diskPercent = rootDisk ? rootDisk.percent : null;
-        const diskUsed = rootDisk ? rootDisk.used : null;
-        const diskTotal = rootDisk ? rootDisk.total : null;
-
-        // If no meaningful data was parsed, treat as failure to stop futile polling
-        if (cpu === null && memTotal === null && cpuCores === null) {
-          resolve({ success: false, error: 'Unable to parse server stats (unsupported OS or shell)' });
-          return;
-        }
-
-        resolve({
-          success: true,
-          stats: {
-            cpu,           // CPU usage percentage (0-100)
-            cpuCores,      // Number of CPU cores
-            cpuPerCore,    // Per-core CPU usage array
-            memTotal,      // Total memory in MB
-            memUsed,       // Used memory in MB (excluding buffers/cache)
-            memFree,       // Free memory in MB
-            memBuffers,    // Buffers in MB
-            memCached,     // Cached in MB
-            swapTotal,     // Swap total in MB
-            swapUsed,      // Swap used in MB
-            topProcesses,  // Top 10 processes by memory
-            diskPercent,   // Disk usage percentage for root partition (backward compat)
-            diskUsed,      // Disk used in GB for root partition (backward compat)
-            diskTotal,     // Total disk in GB for root partition (backward compat)
-            disks,         // Array of all mounted disks
-            netRxSpeed,    // Total network receive speed (bytes/sec)
-            netTxSpeed,    // Total network transmit speed (bytes/sec)
-            netInterfaces, // Per-interface network stats
-          },
+          stream.on('close', () => {
+            clearTimeout(timeout);
+            resolve({ success: true, stdout, stderr });
+          });
         });
       });
+      if (!execResult.success) {
+        return execResult;
+      }
+    } catch (err) {
+      return { success: false, error: err.message || 'SSH exec failed' };
+    }
+  }
+
+  // Parse the output
+  const stdout = execResult.stdout || '';
+  const output = stdout.trim();
+
+  // Unsupported OS — stop polling this session
+  if (output.startsWith('UNSUPPORTED_OS:')) {
+    return { success: false, error: `Server stats not supported on this OS (${output.substring(15)})` };
+  }
+
+  const parts = output.split('|');
+
+  let cpuDirect = null;    // macOS: direct CPU percentage from top
+  let cpuRawTotal = null;
+  let cpuRawIdle = null;
+  let cpuPerCoreRaw = [];  // Array of { total, idle }
+  let cpuCores = null;
+  let memTotal = null;
+  let memFree = null;
+  let memBuffers = null;
+  let memCached = null;
+  let memUsed = null;
+  let swapTotal = null;
+  let swapUsed = null;
+  let topProcesses = [];  // Array of { pid, memPercent, command }
+  let disks = [];  // Array of { mountPoint, used, total, percent }
+  let networkInterfaces = [];  // Array of { name, rxBytes, txBytes }
+
+  for (const part of parts) {
+    if (part.startsWith('CPU:')) {
+      // macOS: top reports CPU% directly (no delta needed)
+      const val = parseFloat(part.substring(4).trim());
+      if (!isNaN(val)) cpuDirect = Math.min(100, Math.max(0, Math.round(val)));
+    } else if (part.startsWith('CPURAW:')) {
+      const rawParts = part.substring(7).trim().split(/\s+/);
+      if (rawParts.length >= 2) {
+        cpuRawTotal = parseInt(rawParts[0], 10);
+        cpuRawIdle = parseInt(rawParts[1], 10);
+      }
+    } else if (part.startsWith('CORES:')) {
+      const coreStr = part.substring(6).trim();
+      const val = parseInt(coreStr, 10);
+      if (!isNaN(val) && val > 0) cpuCores = val;
+    } else if (part.startsWith('PERCORERAW:')) {
+      const coreStr = part.substring(11).trim();
+      if (coreStr && coreStr !== '') {
+        cpuPerCoreRaw = coreStr.split(',').map(v => {
+          const coreParts = v.trim().split(':');
+          if (coreParts.length >= 2) {
+            const total = parseInt(coreParts[0], 10);
+            const idle = parseInt(coreParts[1], 10);
+            if (!isNaN(total) && !isNaN(idle)) {
+              return { total, idle };
+            }
+          }
+          return null;
+        }).filter(v => v !== null);
+      }
+    } else if (part.startsWith('MEMINFO:')) {
+      const memParts = part.substring(8).trim().split(/\s+/);
+      if (memParts.length >= 4) {
+        const total = parseInt(memParts[0], 10);
+        const free = parseInt(memParts[1], 10);
+        const buffers = parseInt(memParts[2], 10);
+        const cached = parseInt(memParts[3], 10);
+        if (!isNaN(total)) memTotal = total;
+        if (!isNaN(free)) memFree = free;
+        if (!isNaN(buffers)) memBuffers = buffers;
+        if (!isNaN(cached)) memCached = cached;
+        // Calculate used memory (excluding buffers/cache)
+        if (memTotal !== null && memFree !== null && memBuffers !== null && memCached !== null) {
+          memUsed = memTotal - memFree - memBuffers - memCached;
+          if (memUsed < 0) memUsed = 0;
+        }
+        // Parse swap info (fields 5 and 6)
+        if (memParts.length >= 6) {
+          const st = parseInt(memParts[4], 10);
+          const sf = parseInt(memParts[5], 10);
+          if (!isNaN(st)) swapTotal = st;
+          if (!isNaN(sf)) {
+            swapUsed = (swapTotal !== null) ? swapTotal - sf : null;
+            if (swapUsed !== null && swapUsed < 0) swapUsed = 0;
+          }
+        }
+      }
+    } else if (part.startsWith('PROCS:')) {
+      const procsStr = part.substring(6).trim();
+      if (procsStr && procsStr !== '') {
+        const procEntries = procsStr.split(',');
+        for (const entry of procEntries) {
+          const procParts = entry.split(';');  // Using ; as delimiter
+          if (procParts.length >= 3) {
+            const pid = procParts[0];
+            const memPercent = parseFloat(procParts[1]);
+            const command = procParts.slice(2).join(';');  // Command might contain semicolons
+            if (!isNaN(memPercent)) {
+              topProcesses.push({ pid, memPercent, command });
+            }
+          }
+        }
+      }
+    } else if (part.startsWith('DISKS:')) {
+      const disksStr = part.substring(6).trim();
+      if (disksStr && disksStr !== '') {
+        const diskEntries = disksStr.split(',');
+        for (const entry of diskEntries) {
+          const diskParts = entry.split(':');
+          if (diskParts.length >= 4) {
+            const mountPoint = diskParts[0];
+            const used = parseInt(diskParts[1], 10);
+            const total = parseInt(diskParts[2], 10);
+            const percent = parseInt(diskParts[3], 10);
+            if (!isNaN(used) && !isNaN(total) && !isNaN(percent)) {
+              disks.push({ mountPoint, used, total, percent });
+            }
+          }
+        }
+      }
+    } else if (part.startsWith('NET:')) {
+      const netStr = part.substring(4).trim();
+      if (netStr && netStr !== '') {
+        const netEntries = netStr.split(',');
+        for (const entry of netEntries) {
+          const netParts = entry.split(':');
+          if (netParts.length >= 3) {
+            const name = netParts[0];
+            const rxBytes = parseInt(netParts[1], 10);
+            const txBytes = parseInt(netParts[2], 10);
+            if (!isNaN(rxBytes) && !isNaN(txBytes)) {
+              networkInterfaces.push({ name, rxBytes, txBytes });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Calculate network speed based on previous reading
+  const now = Date.now();
+  const prevNet = session.prevNetStats || { interfaces: [], timestamp: 0 };
+  const timeDelta = (now - prevNet.timestamp) / 1000; // seconds
+
+  let netRxSpeed = 0;  // bytes per second
+  let netTxSpeed = 0;  // bytes per second
+  const netInterfaces = [];
+
+  if (timeDelta > 0 && prevNet.interfaces.length > 0) {
+    for (const iface of networkInterfaces) {
+      const prevIface = prevNet.interfaces.find(p => p.name === iface.name);
+      if (prevIface) {
+        const rxDelta = iface.rxBytes - prevIface.rxBytes;
+        const txDelta = iface.txBytes - prevIface.txBytes;
+        // Only count positive deltas (handles counter reset)
+        const rxSpeed = rxDelta > 0 ? Math.round(rxDelta / timeDelta) : 0;
+        const txSpeed = txDelta > 0 ? Math.round(txDelta / timeDelta) : 0;
+        netRxSpeed += rxSpeed;
+        netTxSpeed += txSpeed;
+        netInterfaces.push({
+          name: iface.name,
+          rxBytes: iface.rxBytes,
+          txBytes: iface.txBytes,
+          rxSpeed,
+          txSpeed,
+        });
+      } else {
+        netInterfaces.push({
+          name: iface.name,
+          rxBytes: iface.rxBytes,
+          txBytes: iface.txBytes,
+          rxSpeed: 0,
+          txSpeed: 0,
+        });
+      }
+    }
+  } else {
+    // First reading - no speed data yet
+    for (const iface of networkInterfaces) {
+      netInterfaces.push({
+        name: iface.name,
+        rxBytes: iface.rxBytes,
+        txBytes: iface.txBytes,
+        rxSpeed: 0,
+        txSpeed: 0,
+      });
+    }
+  }
+
+  // Store current reading for next calculation
+  session.prevNetStats = {
+    interfaces: networkInterfaces,
+    timestamp: now,
+  };
+
+  // Calculate CPU usage based on delta from previous reading
+  const prevCpu = session.prevCpuStats || { total: 0, idle: 0, perCore: [], timestamp: 0 };
+  let cpu = null;
+  let cpuPerCore = [];
+
+  if (cpuRawTotal !== null && cpuRawIdle !== null && prevCpu.total > 0) {
+    const totalDelta = cpuRawTotal - prevCpu.total;
+    const idleDelta = cpuRawIdle - prevCpu.idle;
+    if (totalDelta > 0) {
+      // CPU% = 100 - (idleDelta / totalDelta * 100)
+      cpu = Math.round(100 - (idleDelta / totalDelta * 100));
+      // Clamp to valid range
+      if (cpu < 0) cpu = 0;
+      if (cpu > 100) cpu = 100;
+    }
+  }
+
+  // macOS: use direct percentage from top (no delta needed)
+  if (cpu === null && cpuDirect !== null) {
+    cpu = cpuDirect;
+  }
+
+  // Calculate per-core CPU usage from deltas
+  if (cpuPerCoreRaw.length > 0 && prevCpu.perCore.length > 0) {
+    cpuPerCore = cpuPerCoreRaw.map((core, index) => {
+      const prevCore = prevCpu.perCore[index];
+      if (prevCore) {
+        const totalDelta = core.total - prevCore.total;
+        const idleDelta = core.idle - prevCore.idle;
+        if (totalDelta > 0) {
+          let usage = Math.round(100 - (idleDelta / totalDelta * 100));
+          if (usage < 0) usage = 0;
+          if (usage > 100) usage = 100;
+          return usage;
+        }
+      }
+      return 0;
     });
-  });
+  } else if (cpuPerCoreRaw.length > 0) {
+    // First reading - no delta data yet, return zeros
+    cpuPerCore = cpuPerCoreRaw.map(() => 0);
+  }
+
+  // Store current CPU reading for next calculation
+  session.prevCpuStats = {
+    total: cpuRawTotal || 0,
+    idle: cpuRawIdle || 0,
+    perCore: cpuPerCoreRaw,
+    timestamp: now,
+  };
+
+  // For backward compatibility, extract root disk info
+  const rootDisk = disks.find(d => d.mountPoint === '/');
+  const diskPercent = rootDisk ? rootDisk.percent : null;
+  const diskUsed = rootDisk ? rootDisk.used : null;
+  const diskTotal = rootDisk ? rootDisk.total : null;
+
+  // If no meaningful data was parsed, treat as failure to stop futile polling
+  if (cpu === null && memTotal === null && cpuCores === null) {
+    return { success: false, error: 'Unable to parse server stats (unsupported OS or shell)' };
+  }
+
+  return {
+    success: true,
+    stats: {
+      cpu,           // CPU usage percentage (0-100)
+      cpuCores,      // Number of CPU cores
+      cpuPerCore,    // Per-core CPU usage array
+      memTotal,      // Total memory in MB
+      memUsed,       // Used memory in MB (excluding buffers/cache)
+      memFree,       // Free memory in MB
+      memBuffers,    // Buffers in MB
+      memCached,     // Cached in MB
+      swapTotal,     // Swap total in MB
+      swapUsed,      // Swap used in MB
+      topProcesses,  // Top 10 processes by memory
+      diskPercent,   // Disk usage percentage for root partition (backward compat)
+      diskUsed,      // Disk used in GB for root partition (backward compat)
+      diskTotal,     // Total disk in GB for root partition (backward compat)
+      disks,         // Array of all mounted disks
+      netRxSpeed,    // Total network receive speed (bytes/sec)
+      netTxSpeed,    // Total network transmit speed (bytes/sec)
+      netInterfaces, // Per-interface network stats
+    },
+  };
 }
 
 /**

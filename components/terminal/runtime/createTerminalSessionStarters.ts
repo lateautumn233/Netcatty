@@ -1140,6 +1140,17 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
           }
         }, 600);
       }
+
+      // Run OS detection for ET sessions (same as SSH) so that
+      // server stats and distro icons work correctly.
+      {
+        const connectionToken = {};
+        connectionTokensBySessionId.set(id, connectionToken);
+        setTimeout(() => {
+          if (!isConnectionTokenCurrent(id, connectionToken)) return;
+          void runDistroDetection(ctx, id, connectionToken);
+        }, 600);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       ctx.setError(message);
