@@ -352,6 +352,13 @@ function prepareEtSshEnvironment(sessionId, options) {
     sshOptions.push(`CertificateFile=${normalizeSshConfigPath(certPath)}`);
   }
 
+  // Additional identity file paths from host config
+  if (Array.isArray(options.identityFilePaths)) {
+    for (const idPath of options.identityFilePaths) {
+      if (idPath) identityPaths.push(idPath);
+    }
+  }
+
   for (const idPath of identityPaths) {
     sshOptions.push(`IdentityFile=${normalizeSshConfigPath(idPath)}`);
   }
@@ -389,6 +396,86 @@ function prepareEtSshEnvironment(sessionId, options) {
 
   sshOptions.push("KbdInteractiveAuthentication=yes");
   sshOptions.push("NumberOfPasswordPrompts=1");
+
+  // Legacy algorithms (all values contain commas → config file only)
+  if (options.legacyAlgorithms) {
+    configLines.push("KexAlgorithms +diffie-hellman-group14-sha1,diffie-hellman-group1-sha1");
+    configLines.push("Ciphers +aes128-cbc,aes256-cbc,3des-cbc");
+    configLines.push("HostKeyAlgorithms +ssh-rsa,ssh-dss");
+    configLines.push("PubkeyAcceptedAlgorithms +ssh-rsa,ssh-dss");
+  }
+
+  // Jump host — use ProxyCommand with explicit ssh options for full auth control
+  // ProxyCommand contains spaces → config file only
+  const jumpHosts = Array.isArray(options.jumpHosts) ? options.jumpHosts : [];
+  if (jumpHosts.length > 1) {
+    throw new Error("EternalTerminal currently supports at most one jump host in Netcatty.");
+  }
+
+  if (jumpHosts[0]) {
+    const jump = jumpHosts[0];
+    const jumpUser = jump.username || os.userInfo().username;
+    const jumpHost = jump.hostname;
+    const jumpPort = jump.port || 22;
+
+    const proxyParts = ["ssh"];
+
+    // Jump host key
+    if (jump.privateKey) {
+      const jumpKeyPath = path.join(sshDir, `${safeId}-jump-key`);
+      writeSecureFile(jumpKeyPath, jump.privateKey, 0o600);
+      proxyParts.push("-i", normalizeSshConfigPath(jumpKeyPath));
+      proxyParts.push("-o", "IdentitiesOnly=yes");
+      if (jump.passphrase) {
+        const jumpPassPath = path.join(sshDir, `${safeId}-jump-passphrase.txt`);
+        writeSecureFile(jumpPassPath, `${jump.passphrase}\n`, 0o600);
+        addAskpassEntry(askpassEntries, "passphrase", createPassphrasePromptMatchers(jumpKeyPath), jumpPassPath);
+      }
+    } else if (Array.isArray(jump.identityFilePaths)) {
+      for (const idPath of jump.identityFilePaths) {
+        if (idPath) proxyParts.push("-i", normalizeSshConfigPath(idPath));
+      }
+      if (jump.identityFilePaths.filter(Boolean).length > 0) {
+        proxyParts.push("-o", "IdentitiesOnly=yes");
+      }
+    }
+
+    // Jump host certificate
+    if (jump.certificate) {
+      const jumpCertPath = path.join(sshDir, `${safeId}-jump-cert.pub`);
+      writeSecureFile(jumpCertPath, jump.certificate, 0o600);
+      proxyParts.push("-o", `CertificateFile=${normalizeSshConfigPath(jumpCertPath)}`);
+    }
+
+    // Jump host password
+    if (jump.password) {
+      const jumpPwPath = path.join(sshDir, `${safeId}-jump-password.txt`);
+      writeSecureFile(jumpPwPath, `${jump.password}\n`, 0o600);
+      addAskpassEntry(askpassEntries, "password", createPasswordPromptMatchers({
+        hostname: jumpHost,
+        username: jumpUser,
+        port: jumpPort,
+      }), jumpPwPath);
+    }
+
+    // Share known_hosts with jump connection
+    if (fs.existsSync(knownHostsPath)) {
+      proxyParts.push("-o", `UserKnownHostsFile=${normalizeSshConfigPath(knownHostsPath)}`);
+    }
+
+    proxyParts.push("-o", "KbdInteractiveAuthentication=yes");
+    proxyParts.push("-o", "NumberOfPasswordPrompts=1");
+
+    if (options.legacyAlgorithms) {
+      proxyParts.push("-o", "KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1");
+      proxyParts.push("-o", "Ciphers=+aes128-cbc,aes256-cbc,3des-cbc");
+      proxyParts.push("-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss");
+      proxyParts.push("-o", "PubkeyAcceptedAlgorithms=+ssh-rsa,ssh-dss");
+    }
+
+    proxyParts.push("-W", "%h:%p", "-p", String(jumpPort), `${jumpUser}@${jumpHost}`);
+    configLines.push(`ProxyCommand ${proxyParts.join(" ")}`);
+  }
 
   // Write config file with comma/space-containing options (if any)
   if (configLines.length > 0) {

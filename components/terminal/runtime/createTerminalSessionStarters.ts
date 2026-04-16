@@ -1009,6 +1009,90 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       return;
     }
 
+    if (ctx.resolvedChainHosts.length > 1) {
+      const message = tr(
+        "terminal.et.multiJumpUnsupported",
+        "EternalTerminal currently supports at most one jump host in Netcatty.",
+      );
+      ctx.setError(message);
+      term.writeln(`\r\n[${message}]`);
+      ctx.updateStatus("disconnected");
+      return;
+    }
+
+    const jumpHostsWithUnavailableCredentials: string[] = [];
+    const unsupportedJumpProxies: string[] = [];
+    const jumpHosts = ctx.resolvedChainHosts.map<NetcattyJumpHost>((jumpHost) => {
+      const jumpAuth = resolveHostAuth({
+        host: jumpHost,
+        keys: ctx.keys,
+        identities: ctx.identities,
+      });
+      const jumpKey = jumpAuth.key;
+      const rawJumpPassword = jumpAuth.password;
+      const rawJumpPrivateKey = jumpKey?.privateKey;
+      const rawJumpPassphrase = jumpAuth.passphrase || jumpKey?.passphrase;
+      const jumpPassword = sanitizeCredentialValue(rawJumpPassword);
+      const jumpPrivateKey = sanitizeCredentialValue(rawJumpPrivateKey);
+      const jumpPassphrase = sanitizeCredentialValue(rawJumpPassphrase);
+
+      if (jumpHost.proxyConfig?.host && jumpHost.proxyConfig?.port) {
+        unsupportedJumpProxies.push(jumpHost.label || jumpHost.hostname);
+      }
+
+      const hasEncryptedJumpCredential =
+        isEncryptedCredentialPlaceholder(rawJumpPassword) ||
+        isEncryptedCredentialPlaceholder(rawJumpPrivateKey) ||
+        isEncryptedCredentialPlaceholder(rawJumpPassphrase);
+
+      if (hasEncryptedJumpCredential && !jumpPassword && !jumpPrivateKey && !jumpPassphrase) {
+        jumpHostsWithUnavailableCredentials.push(jumpHost.label || jumpHost.hostname);
+      }
+
+      return {
+        hostname: jumpHost.hostname,
+        port: jumpHost.port || 22,
+        username: jumpAuth.username || "root",
+        password: jumpPassword,
+        privateKey: jumpPrivateKey,
+        certificate: jumpKey?.certificate,
+        passphrase: jumpPassphrase,
+        publicKey: jumpKey?.publicKey,
+        keyId: jumpAuth.keyId,
+        keySource: jumpKey?.source,
+        label: jumpHost.label,
+        identityFilePaths: jumpHost.identityFilePaths,
+      };
+    });
+
+    if (unsupportedJumpProxies.length > 0) {
+      const message = tr(
+        "terminal.et.proxyUnsupported",
+        "EternalTerminal does not currently support Netcatty proxy settings. Use SSH or remove the proxy for this host.",
+      );
+      ctx.setError(message);
+      term.writeln(`\r\n[${message}]`);
+      ctx.updateStatus("disconnected");
+      return;
+    }
+
+    if (jumpHostsWithUnavailableCredentials.length > 0) {
+      const jumpList = jumpHostsWithUnavailableCredentials.slice(0, 2).join(", ");
+      const suffix =
+        jumpHostsWithUnavailableCredentials.length > 2
+          ? ` +${jumpHostsWithUnavailableCredentials.length - 2}`
+          : "";
+      const base = tr(
+        "terminal.auth.jumpCredentialsUnavailable",
+        "A jump host has saved credentials that cannot be decrypted on this device. Open host settings and re-enter them.",
+      );
+      const message = `${base} (${jumpList}${suffix})`;
+      ctx.setError(message);
+      term.writeln(`\r\n[${message}]`);
+      ctx.updateStatus("disconnected");
+      return;
+    }
+
     try {
       const etEnv = buildTermEnv(ctx.host, ctx.terminalSettings);
       const id = await ctx.terminalBackend.startEtSession({
@@ -1032,7 +1116,10 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
         rows: term.rows,
         charset: ctx.host.charset,
         env: etEnv,
+        jumpHosts: jumpHosts.length > 0 ? jumpHosts : undefined,
+        legacyAlgorithms: ctx.host.legacyAlgorithms,
         sessionLog: ctx.sessionLog?.enabled ? ctx.sessionLog : undefined,
+        identityFilePaths: key ? undefined : ctx.host.identityFilePaths,
       });
 
       attachSessionToTerminal(ctx, term, id, {
