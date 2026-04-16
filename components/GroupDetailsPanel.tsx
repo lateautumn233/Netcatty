@@ -108,6 +108,7 @@ const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({
     !!c.proxyConfig || !!c.hostChain || !!c.startupCommand || c.legacyAlgorithms !== undefined || c.backspaceBehavior !== undefined ||
     (c.environmentVariables && c.environmentVariables.length > 0) ||
     c.moshEnabled !== undefined || !!c.moshServerPath ||
+    c.etEnabled !== undefined || c.etPort !== undefined || !!c.etTerminalPath ||
     (c.identityFilePaths && c.identityFilePaths.length > 0);
   const hasTelnetFields = (c: Partial<GroupConfig>) =>
     c.telnetPort !== undefined || !!c.telnetUsername || !!c.telnetPassword || c.telnetEnabled === true;
@@ -162,6 +163,9 @@ const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({
       delete next.protocol;
       delete next.moshEnabled;
       delete next.moshServerPath;
+      delete next.etEnabled;
+      delete next.etPort;
+      delete next.etTerminalPath;
       return next;
     });
   };
@@ -325,6 +329,9 @@ const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({
         ...(form.environmentVariables !== undefined && { environmentVariables: form.environmentVariables }),
         ...(form.moshEnabled !== undefined && { moshEnabled: form.moshEnabled }),
         ...(form.moshServerPath !== undefined && { moshServerPath: form.moshServerPath }),
+        ...(form.etEnabled !== undefined && { etEnabled: form.etEnabled }),
+        ...(form.etPort !== undefined && { etPort: form.etPort }),
+        ...(form.etTerminalPath !== undefined && { etTerminalPath: form.etTerminalPath }),
       }),
       // Only include Telnet fields if Telnet section is enabled
       ...(telnetEnabled && {
@@ -913,6 +920,13 @@ const GroupDetailsPanel: React.FC<GroupDetailsPanelProps> = ({
                 className="h-10"
               />
             )}
+
+            {/* EternalTerminal */}
+            <ToggleRow
+              label="EternalTerminal"
+              enabled={!!form.etEnabled}
+              onToggle={() => update("etEnabled", !form.etEnabled)}
+            />
           </Card>
         )}
 

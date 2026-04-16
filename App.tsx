@@ -634,7 +634,7 @@ function App({ settings }: { settings: SettingsState }) {
       return;
     }
 
-    const protocol = effectiveHost.moshEnabled ? 'mosh' : (effectiveHost.protocol || 'ssh');
+    const protocol = effectiveHost.etEnabled ? 'et' : effectiveHost.moshEnabled ? 'mosh' : (effectiveHost.protocol || 'ssh');
     const resolvedAuth = resolveHostAuth({ host: effectiveHost, keys, identities });
     const sessionId = connectToHost(effectiveHost);
     addConnectionLog({
@@ -643,7 +643,7 @@ function App({ settings }: { settings: SettingsState }) {
       hostLabel: host.label,
       hostname: host.hostname,
       username: resolvedAuth.username || 'root',
-      protocol: protocol as 'ssh' | 'telnet' | 'local' | 'mosh',
+      protocol: protocol as 'ssh' | 'telnet' | 'local' | 'mosh' | 'et',
       startTime: Date.now(),
       localUsername: username,
       localHostname: localHost,
@@ -1493,7 +1493,7 @@ function App({ settings }: { settings: SettingsState }) {
       return;
     }
 
-    const protocol = effectiveHost.moshEnabled ? 'mosh' : (effectiveHost.protocol || 'ssh');
+    const protocol = effectiveHost.etEnabled ? 'et' : effectiveHost.moshEnabled ? 'mosh' : (effectiveHost.protocol || 'ssh');
     const resolvedAuth = resolveHostAuth({ host: effectiveHost, keys, identities });
     const sessionId = connectToHost(effectiveHost);
     addConnectionLog({
@@ -1502,7 +1502,7 @@ function App({ settings }: { settings: SettingsState }) {
       hostLabel: host.label,
       hostname: host.hostname,
       username: resolvedAuth.username || 'root',
-      protocol: protocol as 'ssh' | 'telnet' | 'local' | 'mosh',
+      protocol: protocol as 'ssh' | 'telnet' | 'local' | 'mosh' | 'et',
       startTime: Date.now(),
       localUsername: username,
       localHostname: localHost,
@@ -1581,6 +1581,8 @@ function App({ settings }: { settings: SettingsState }) {
     if (effective.protocol === 'ssh' || !effective.protocol) count++;
     // Mosh adds another option
     if (effective.moshEnabled) count++;
+    // EternalTerminal adds another option
+    if (effective.etEnabled) count++;
     // Telnet adds another option
     if (effective.telnetEnabled) count++;
     // If protocol is explicitly telnet (not ssh), count it
@@ -1606,9 +1608,10 @@ function App({ settings }: { settings: SettingsState }) {
     if (protocolSelectHost) {
       const hostWithProtocol: Host = {
         ...protocolSelectHost,
-        protocol: protocol === 'mosh' ? 'ssh' : protocol,
+        protocol: protocol === 'mosh' || protocol === 'et' ? 'ssh' : protocol,
         port,
         moshEnabled: protocol === 'mosh',
+        etEnabled: protocol === 'et',
       };
       handleConnectToHost(hostWithProtocol);
       setProtocolSelectHost(null);
