@@ -205,7 +205,10 @@ declare global {
       rows?: number;
       charset?: string;
       env?: Record<string, string>;
+      jumpHosts?: NetcattyJumpHost[];
+      legacyAlgorithms?: boolean;
       sessionLog?: { enabled: boolean; directory: string; format: string };
+      identityFilePaths?: string[];
     }): Promise<string>;
     startLocalSession?(options: { sessionId?: string; cols?: number; rows?: number; shell?: string; shellArgs?: string[]; cwd?: string; env?: Record<string, string>; sessionLog?: { enabled: boolean; directory: string; format: string } }): Promise<string>;
     startSerialSession?(options: {
