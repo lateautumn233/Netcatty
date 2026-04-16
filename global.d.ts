@@ -184,6 +184,20 @@ declare global {
       env?: Record<string, string>;
       sessionLog?: { enabled: boolean; directory: string; format: string };
     }): Promise<string>;
+    startEtSession?(options: {
+      sessionId?: string;
+      hostname: string;
+      username?: string;
+      port?: number;
+      etPort?: number;
+      terminalPath?: string;
+      agentForwarding?: boolean;
+      cols?: number;
+      rows?: number;
+      charset?: string;
+      env?: Record<string, string>;
+      sessionLog?: { enabled: boolean; directory: string; format: string };
+    }): Promise<string>;
     startLocalSession?(options: { sessionId?: string; cols?: number; rows?: number; shell?: string; shellArgs?: string[]; cwd?: string; env?: Record<string, string>; sessionLog?: { enabled: boolean; directory: string; format: string } }): Promise<string>;
     startSerialSession?(options: {
       sessionId?: string;
