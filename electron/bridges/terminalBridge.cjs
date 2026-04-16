@@ -825,6 +825,150 @@ async function startMoshSession(event, options) {
 }
 
 /**
+ * Start an EternalTerminal session using system et client
+ */
+async function startEtSession(event, options) {
+  const sessionId =
+    options.sessionId ||
+    `et-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const cols = options.cols || 80;
+  const rows = options.rows || 24;
+
+  let etCmd = 'et';
+  if (process.platform === 'win32') {
+    etCmd = findExecutable('et') || 'et.exe';
+  }
+
+  const args = [];
+
+  // Non-standard SSH port → --ssh-option Port=PORT (et passes it as ssh -oPort=PORT)
+  if (options.port && options.port !== 22) {
+    args.push('--ssh-option', `Port=${options.port}`);
+  }
+
+  // ET server port (default 2022)
+  if (options.etPort && options.etPort !== 2022) {
+    args.push('-p', String(options.etPort));
+  }
+
+  // Custom etterminal path on remote
+  if (options.terminalPath) {
+    args.push('--terminal-path=' + options.terminalPath);
+  }
+
+  // SSH Agent forwarding (ET supports -f natively)
+  if (options.agentForwarding) {
+    args.push('-f');
+  }
+
+  const userHost = options.username
+    ? `${options.username}@${options.hostname}`
+    : options.hostname;
+  args.push(userHost);
+
+  const env = {
+    ...process.env,
+    ...(options.env || {}),
+    TERM: 'xterm-256color',
+  };
+
+  if (options.agentForwarding && process.env.SSH_AUTH_SOCK) {
+    env.SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK;
+  }
+
+  try {
+    const proc = pty.spawn(etCmd, args, {
+      cols,
+      rows,
+      env,
+      cwd: os.homedir(),
+      encoding: null, // Return Buffer for ZMODEM binary support
+    });
+
+    const session = {
+      proc,
+      pty: proc,
+      type: 'et',
+      protocol: 'et',
+      webContentsId: event.sender.id,
+      hostname: options.hostname || '',
+      username: options.username || '',
+      label: options.label || options.hostname || 'ET Session',
+      shellKind: 'posix',
+      shellExecutable: 'remote-shell',
+      flushPendingData: null,
+      lastIdlePrompt: "",
+      lastIdlePromptAt: 0,
+      _promptTrackTail: "",
+    };
+    sessions.set(sessionId, session);
+
+    // Start real-time session log stream if configured
+    if (options.sessionLog?.enabled && options.sessionLog?.directory) {
+      sessionLogStreamManager.startStream(sessionId, {
+        hostLabel: options.label || options.hostname,
+        hostname: options.hostname,
+        directory: options.sessionLog.directory,
+        format: options.sessionLog.format || "txt",
+        startTime: Date.now(),
+      });
+    }
+
+    const { bufferData: bufferEtData, flush: flushEt } = createPtyBuffer((data) => {
+      const contents = electronModule.webContents.fromId(session.webContentsId);
+      contents?.send("netcatty:data", { sessionId, data });
+    });
+    session.flushPendingData = flushEt;
+
+    if (process.platform !== "win32") {
+      const etDecoder = new StringDecoder("utf8");
+      const etZmodemSentry = createZmodemSentry({
+        sessionId,
+        onData(buf) {
+          const str = etDecoder.write(buf);
+          if (!str) return;
+          trackSessionIdlePrompt(session, str);
+          bufferEtData(str);
+          sessionLogStreamManager.appendData(sessionId, str);
+        },
+        writeToRemote(buf) {
+          try { return proc.write(buf); } catch { return true; }
+        },
+        getWebContents() {
+          return electronModule.webContents.fromId(session.webContentsId);
+        },
+        label: "ET",
+      });
+      session.zmodemSentry = etZmodemSentry;
+
+      proc.onData((data) => {
+        etZmodemSentry.consume(data);
+      });
+    } else {
+      proc.onData((data) => {
+        trackSessionIdlePrompt(session, data);
+        bufferEtData(data);
+        sessionLogStreamManager.appendData(sessionId, data);
+      });
+    }
+
+    proc.onExit((evt) => {
+      flushEt();
+      sessionLogStreamManager.stopStream(sessionId);
+      sessions.delete(sessionId);
+      const contents = electronModule.webContents.fromId(session.webContentsId);
+      contents?.send("netcatty:exit", { sessionId, ...evt, reason: evt.exitCode === 0 ? "exited" : "error" });
+    });
+
+    return { sessionId };
+  } catch (err) {
+    console.error("[ET] Failed to start EternalTerminal session:", err.message);
+    throw err;
+  }
+}
+
+/**
  * List available serial ports (hardware only)
  */
 async function listSerialPorts() {
@@ -1093,6 +1237,7 @@ function registerHandlers(ipcMain) {
   ipcMain.handle("netcatty:local:start", startLocalSession);
   ipcMain.handle("netcatty:telnet:start", startTelnetSession);
   ipcMain.handle("netcatty:mosh:start", startMoshSession);
+  ipcMain.handle("netcatty:et:start", startEtSession);
   ipcMain.handle("netcatty:serial:start", startSerialSession);
   ipcMain.handle("netcatty:serial:list", listSerialPorts);
   ipcMain.handle("netcatty:local:defaultShell", getDefaultShell);

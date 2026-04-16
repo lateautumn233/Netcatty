@@ -50,6 +50,7 @@ const INHERITABLE_KEYS: (keyof GroupConfig)[] = [
   'username', 'password', 'savePassword', 'authMethod', 'identityId', 'identityFileId', 'identityFilePaths',
   'port', 'protocol', 'agentForwarding', 'proxyConfig', 'hostChain', 'startupCommand',
   'legacyAlgorithms', 'environmentVariables', 'charset', 'moshEnabled', 'moshServerPath',
+  'etEnabled', 'etPort', 'etTerminalPath',
   'telnetEnabled', 'telnetPort', 'telnetUsername', 'telnetPassword',
   'theme', 'themeOverride', 'fontFamily', 'fontFamilyOverride', 'fontSize', 'fontSizeOverride', 'fontWeight', 'fontWeightOverride',
   'backspaceBehavior',
