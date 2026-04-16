@@ -921,12 +921,14 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
         const port = session.port ?? existingHost.port;
         const moshEnabled = session.moshEnabled ?? existingHost.moshEnabled;
         const etEnabled = session.etEnabled ?? existingHost.etEnabled;
+        const etPort = session.etPort ?? existingHost.etPort;
 
         if (
           protocol === existingHost.protocol &&
           port === existingHost.port &&
           moshEnabled === existingHost.moshEnabled &&
-          etEnabled === existingHost.etEnabled
+          etEnabled === existingHost.etEnabled &&
+          etPort === existingHost.etPort
         ) {
           map.set(session.id, existingHost);
         } else {
@@ -936,6 +938,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
             port,
             moshEnabled,
             etEnabled,
+            etPort,
           });
         }
       } else {
@@ -952,6 +955,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
           protocol: session.protocol ?? 'local' as const,
           moshEnabled: session.moshEnabled,
           etEnabled: session.etEnabled,
+          etPort: session.etPort,
           charset: session.charset,
           localShell: session.localShell,
           localShellArgs: session.localShellArgs,

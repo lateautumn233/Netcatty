@@ -388,7 +388,7 @@ const VaultViewInner: React.FC<VaultViewProps> = ({
 
   // Handle protocol selection
   const handleProtocolSelect = useCallback(
-    (protocol: HostProtocol, port: number) => {
+    (protocol: HostProtocol, port: number, etPort?: number) => {
       if (protocolSelectHost) {
         const hostWithProtocol: Host = {
           ...protocolSelectHost,
@@ -396,6 +396,7 @@ const VaultViewInner: React.FC<VaultViewProps> = ({
           port,
           moshEnabled: protocol === "mosh",
           etEnabled: protocol === "et",
+          ...(etPort !== undefined && { etPort }),
         };
         onConnect(hostWithProtocol);
         setProtocolSelectHost(null);

@@ -14,6 +14,7 @@ import { Input } from './ui/input';
 interface ProtocolOption {
     protocol: HostProtocol;
     port: number;
+    etPort?: number;
     label: string;
     icon: React.ReactNode;
     description: string;
@@ -22,7 +23,7 @@ interface ProtocolOption {
 
 interface ProtocolSelectDialogProps {
     host: Host;
-    onSelect: (protocol: HostProtocol, port: number) => void;
+    onSelect: (protocol: HostProtocol, port: number, etPort?: number) => void;
     onCancel: () => void;
 }
 
@@ -69,6 +70,7 @@ const ProtocolSelectDialog: React.FC<ProtocolSelectDialogProps> = ({
             options.push({
                 protocol: 'et',
                 port: etConfig?.port || host.port || 22,
+                etPort: host.etPort || 2022,
                 label: 'EternalTerminal',
                 icon: <Globe size={18} />,
                 description: `et ${host.hostname}`,
@@ -101,6 +103,12 @@ const ProtocolSelectDialog: React.FC<ProtocolSelectDialogProps> = ({
         return initial as Record<HostProtocol, number>;
     });
 
+    // Separate state for ET server port
+    const [etPort, setEtPort] = useState<number>(() => {
+        const etOpt = protocolOptions.find(o => o.protocol === 'et');
+        return etOpt?.etPort || host.etPort || 2022;
+    });
+
     const [selectedProtocol, setSelectedProtocol] = useState<HostProtocol>(
         protocolOptions[0]?.protocol || 'ssh'
     );
@@ -112,8 +120,19 @@ const ProtocolSelectDialog: React.FC<ProtocolSelectDialogProps> = ({
         }
     };
 
+    const handleEtPortChange = (value: string) => {
+        const port = parseInt(value, 10);
+        if (!isNaN(port) && port > 0 && port <= 65535) {
+            setEtPort(port);
+        }
+    };
+
     const handleContinue = () => {
-        onSelect(selectedProtocol, ports[selectedProtocol] || 22);
+        onSelect(
+            selectedProtocol,
+            ports[selectedProtocol] || 22,
+            selectedProtocol === 'et' ? etPort : undefined,
+        );
     };
 
     // If only one protocol, auto-select and proceed
@@ -187,20 +206,53 @@ const ProtocolSelectDialog: React.FC<ProtocolSelectDialogProps> = ({
                                         </div>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2">
-                                    <span className="text-xs text-muted-foreground">{t("protocolSelect.port")}</span>
-                                    <Input
-                                        type="number"
-                                        value={ports[option.protocol] || option.port}
-                                        onChange={(e) => handlePortChange(option.protocol, e.target.value)}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            setSelectedProtocol(option.protocol);
-                                        }}
-                                        className="w-16 h-7 text-xs text-center"
-                                        min={1}
-                                        max={65535}
-                                    />
+                                <div className="flex items-center gap-2 flex-wrap justify-end">
+                                    {option.protocol === 'et' ? (
+                                        <>
+                                            <span className="text-xs text-muted-foreground">{t("protocolSelect.sshPort")}</span>
+                                            <Input
+                                                type="number"
+                                                value={ports[option.protocol] || option.port}
+                                                onChange={(e) => handlePortChange(option.protocol, e.target.value)}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedProtocol(option.protocol);
+                                                }}
+                                                className="w-16 h-7 text-xs text-center"
+                                                min={1}
+                                                max={65535}
+                                            />
+                                            <span className="text-xs text-muted-foreground">{t("protocolSelect.etPort")}</span>
+                                            <Input
+                                                type="number"
+                                                value={etPort}
+                                                onChange={(e) => handleEtPortChange(e.target.value)}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedProtocol(option.protocol);
+                                                }}
+                                                className="w-16 h-7 text-xs text-center"
+                                                min={1}
+                                                max={65535}
+                                            />
+                                        </>
+                                    ) : (
+                                        <>
+                                            <span className="text-xs text-muted-foreground">{t("protocolSelect.port")}</span>
+                                            <Input
+                                                type="number"
+                                                value={ports[option.protocol] || option.port}
+                                                onChange={(e) => handlePortChange(option.protocol, e.target.value)}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedProtocol(option.protocol);
+                                                }}
+                                                className="w-16 h-7 text-xs text-center"
+                                                min={1}
+                                                max={65535}
+                                            />
+                                        </>
+                                    )}
                                 </div>
                             </button>
                         ))}

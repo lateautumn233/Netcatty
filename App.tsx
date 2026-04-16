@@ -1661,7 +1661,7 @@ function App({ settings }: { settings: SettingsState }) {
   }, [hasMultipleProtocols, handleConnectToHost, resolveEffectiveHost]);
 
   // Handle protocol selection from dialog
-  const handleProtocolSelect = useCallback((protocol: HostProtocol, port: number) => {
+  const handleProtocolSelect = useCallback((protocol: HostProtocol, port: number, etPort?: number) => {
     if (protocolSelectHost) {
       const hostWithProtocol: Host = {
         ...protocolSelectHost,
@@ -1669,6 +1669,7 @@ function App({ settings }: { settings: SettingsState }) {
         port,
         moshEnabled: protocol === 'mosh',
         etEnabled: protocol === 'et',
+        ...(etPort !== undefined && { etPort }),
       };
       handleConnectToHost(hostWithProtocol);
       setProtocolSelectHost(null);

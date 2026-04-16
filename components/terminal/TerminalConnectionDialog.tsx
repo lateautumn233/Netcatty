@@ -37,13 +37,13 @@ export interface TerminalConnectionDialogProps {
 }
 
 // Helper to get protocol display info
-const getProtocolInfo = (host: Host): { i18nKey: string; showPort: boolean; port: number } => {
+const getProtocolInfo = (host: Host): { i18nKey: string; showPort: boolean; port: number; etPort?: number } => {
     // Check moshEnabled first since mosh uses protocol: "ssh" with moshEnabled: true
     if (host.moshEnabled) {
         return { i18nKey: 'terminal.connection.protocol.mosh', showPort: true, port: host.port || 22 };
     }
     if (host.etEnabled) {
-        return { i18nKey: 'terminal.connection.protocol.et', showPort: true, port: host.port || 22 };
+        return { i18nKey: 'terminal.connection.protocol.et', showPort: true, port: host.port || 22, etPort: host.etPort || 2022 };
     }
     const protocol = host.protocol || 'ssh';
     switch (protocol) {
@@ -55,7 +55,7 @@ const getProtocolInfo = (host: Host): { i18nKey: string; showPort: boolean; port
         case 'mosh':
             return { i18nKey: 'terminal.connection.protocol.mosh', showPort: true, port: host.port || 22 };
         case 'et':
-            return { i18nKey: 'terminal.connection.protocol.et', showPort: true, port: host.port || 22 };
+            return { i18nKey: 'terminal.connection.protocol.et', showPort: true, port: host.port || 22, etPort: host.etPort || 2022 };
         case 'serial':
             return { i18nKey: 'terminal.connection.protocol.serial', showPort: false, port: 0 };
         case 'ssh':
@@ -117,7 +117,7 @@ export const TerminalConnectionDialog: React.FC<TerminalConnectionDialogProps> =
                                         className="text-[10px] font-mono truncate"
                                         style={{ color: 'color-mix(in srgb, var(--terminal-ui-fg, var(--foreground)) 58%, transparent)' }}
                                     >
-                                        {t(protocolInfo.i18nKey)} {protocolInfo.showPort ? formatHostPort(host.hostname, protocolInfo.port) : host.hostname}
+                                        {t(protocolInfo.i18nKey)} {protocolInfo.showPort ? formatHostPort(host.hostname, protocolInfo.port) : host.hostname}{protocolInfo.etPort ? ` (ET:${protocolInfo.etPort})` : ''}
                                     </div>
                                 </>
                             ) : (
@@ -127,7 +127,7 @@ export const TerminalConnectionDialog: React.FC<TerminalConnectionDialogProps> =
                                         className="text-[10px] font-mono truncate"
                                         style={{ color: 'color-mix(in srgb, var(--terminal-ui-fg, var(--foreground)) 58%, transparent)' }}
                                     >
-                                        {t(protocolInfo.i18nKey)} {protocolInfo.showPort ? formatHostPort(host.hostname, protocolInfo.port) : host.hostname}
+                                        {t(protocolInfo.i18nKey)} {protocolInfo.showPort ? formatHostPort(host.hostname, protocolInfo.port) : host.hostname}{protocolInfo.etPort ? ` (ET:${protocolInfo.etPort})` : ''}
                                     </div>
                                 </>
                             )}
