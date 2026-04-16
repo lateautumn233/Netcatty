@@ -10,6 +10,7 @@ const { randomUUID } = require("node:crypto");
 const { execFile } = require("node:child_process");
 const path = require("node:path");
 const { promisify } = require("node:util");
+const { execFileSync } = require("node:child_process");
 const { StringDecoder } = require("node:string_decoder");
 const pty = require("node-pty");
 const { SerialPort } = require("serialport");
@@ -17,6 +18,7 @@ const iconv = require("iconv-lite");
 const ptyProcessTree = require("./ptyProcessTree.cjs");
 
 const sessionLogStreamManager = require("./sessionLogStreamManager.cjs");
+const tempDirBridge = require("./tempDirBridge.cjs");
 const { detectShellKind } = require("./ai/ptyExec.cjs");
 const { trackSessionIdlePrompt } = require("./ai/shellUtils.cjs");
 const { createZmodemSentry } = require("./zmodemHelper.cjs");
@@ -76,6 +78,29 @@ const getLoginShellArgs = (shellPath) => {
 function init(deps) {
   sessions = deps.sessions;
   electronModule = deps.electronModule;
+  cleanupStaleEtTempDirs();
+}
+
+/**
+ * Remove leftover et-ssh-home-* temp directories from previous sessions
+ * that were not cleaned up (e.g. due to a crash).
+ */
+function cleanupStaleEtTempDirs() {
+  try {
+    const tempDir = tempDirBridge.getTempDir?.() || path.join(os.tmpdir(), "Netcatty");
+    if (!fs.existsSync(tempDir)) return;
+    const entries = fs.readdirSync(tempDir);
+    for (const entry of entries) {
+      if (!entry.includes("et-ssh-home-")) continue;
+      try {
+        fs.rmSync(path.join(tempDir, entry), { recursive: true, force: true });
+      } catch {
+        // ignore per-entry cleanup failures
+      }
+    }
+  } catch {
+    // ignore — best-effort cleanup
+  }
 }
 
 /**
@@ -121,6 +146,287 @@ function createPtyBuffer(sendFn) {
   };
 
   return { bufferData, flush };
+}
+
+const ET_ASKPASS_SCRIPT = String.raw`#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+
+function normalizePrompt(prompt) {
+  return String(prompt || "").toLowerCase();
+}
+
+function loadEntries() {
+  const mapPath = process.env.NETCATTY_ET_ASKPASS_MAP;
+  if (!mapPath) return [];
+  try {
+    const raw = fs.readFileSync(mapPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function matchesPrompt(entry, prompt) {
+  const matchers = Array.isArray(entry.matchers) ? entry.matchers : [];
+  return matchers.some((matcher) => prompt.includes(String(matcher || "").toLowerCase()));
+}
+
+function pickEntry(entries, prompt) {
+  const wantsPassphrase = prompt.includes("passphrase");
+  const scoped = entries.filter((entry) => entry.type === (wantsPassphrase ? "passphrase" : "password"));
+  const matched = scoped.find((entry) => matchesPrompt(entry, prompt));
+  if (matched) return matched;
+  if (scoped.length === 1) return scoped[0];
+  return null;
+}
+
+function main() {
+  const prompt = normalizePrompt(process.argv.slice(2).join(" "));
+  const entries = loadEntries();
+  const entry = pickEntry(entries, prompt);
+  if (!entry?.secretFile) return;
+  try {
+    const secret = fs.readFileSync(entry.secretFile, "utf8").replace(/\r?\n$/, "");
+    process.stdout.write(secret + "\n");
+  } catch {
+    // ignore
+  }
+}
+
+main();
+`;
+
+function writeSecureFile(filePath, content, mode = 0o600) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content, typeof content === "string" ? "utf8" : undefined);
+  if (process.platform === "win32") {
+    try {
+      // Remove inherited ACLs, grant only current user full control
+      execFileSync("icacls", [filePath, "/inheritance:r", "/grant:r", `${os.userInfo().username}:F`], {
+        windowsHide: true,
+        timeout: 5000,
+      });
+    } catch {
+      // ignore ACL failures (e.g. network drives)
+    }
+  } else {
+    try {
+      fs.chmodSync(filePath, mode);
+    } catch {
+      // ignore chmod failures on non-POSIX filesystems
+    }
+  }
+  return filePath;
+}
+
+function normalizeSshConfigPath(targetPath) {
+  return path.resolve(String(targetPath)).replace(/\\/g, "/");
+}
+
+function createPasswordPromptMatchers({ hostname, username, port }) {
+  const values = new Set();
+  const addHostVariant = (hostValue) => {
+    if (!hostValue) return;
+    const lowerHost = String(hostValue).toLowerCase();
+    values.add(lowerHost);
+    if (username) {
+      values.add(`${String(username).toLowerCase()}@${lowerHost}`);
+      values.add(`${String(username).toLowerCase()}@${lowerHost}'s password`);
+      if (port) values.add(`${String(username).toLowerCase()}@${lowerHost}:${port}`);
+    }
+  };
+
+  addHostVariant(hostname);
+  return [...values];
+}
+
+function createPassphrasePromptMatchers(keyPath) {
+  const normalizedPath = normalizeSshConfigPath(keyPath).toLowerCase();
+  return [normalizedPath, path.basename(normalizedPath)];
+}
+
+function addAskpassEntry(entries, type, matchers, secretFile) {
+  if (!secretFile) return;
+  entries.push({
+    type,
+    matchers: [...new Set((matchers || []).map((value) => String(value || "").toLowerCase()).filter(Boolean))],
+    secretFile,
+  });
+}
+
+function createEtAskpassArtifacts(sshDir, askpassEntries) {
+  if (!Array.isArray(askpassEntries) || askpassEntries.length === 0) {
+    return { env: {}, artifacts: [] };
+  }
+
+  const askpassMapPath = path.join(sshDir, "netcatty-et-askpass-map.json");
+  const askpassScriptPath = path.join(sshDir, "netcatty-et-askpass.cjs");
+  writeSecureFile(askpassMapPath, `${JSON.stringify(askpassEntries, null, 2)}\n`, 0o600);
+  writeSecureFile(askpassScriptPath, ET_ASKPASS_SCRIPT, 0o700);
+
+  if (process.platform === "win32") {
+    const askpassCmdPath = path.join(sshDir, "netcatty-et-askpass.cmd");
+    writeSecureFile(
+      askpassCmdPath,
+      `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath.replace(/"/g, '""')}" "%~dp0netcatty-et-askpass.cjs" %*\r\n`,
+      0o700,
+    );
+    return {
+      env: {
+        SSH_ASKPASS: askpassCmdPath,
+        SSH_ASKPASS_REQUIRE: "force",
+        DISPLAY: process.env.DISPLAY || "netcatty:0",
+        NETCATTY_ET_ASKPASS_MAP: askpassMapPath,
+      },
+      artifacts: [askpassMapPath, askpassScriptPath, askpassCmdPath],
+    };
+  }
+
+  return {
+    env: {
+      SSH_ASKPASS: askpassScriptPath,
+      SSH_ASKPASS_REQUIRE: "force",
+      DISPLAY: process.env.DISPLAY || "netcatty:0",
+      NETCATTY_ET_ASKPASS_MAP: askpassMapPath,
+    },
+    artifacts: [askpassMapPath, askpassScriptPath],
+  };
+}
+
+function copyIfExists(sourcePath, targetPath) {
+  try {
+    if (fs.existsSync(sourcePath)) {
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+  } catch {
+    // ignore copy failures
+  }
+}
+
+function prepareEtSshEnvironment(sessionId, options) {
+  const tempDir = tempDirBridge.getTempFilePath(`et-ssh-home-${sessionId}`);
+  const sshDir = path.join(tempDir, ".ssh");
+  fs.mkdirSync(sshDir, { recursive: true });
+
+  const safeId = String(sessionId || "session").replace(/[^\w.-]/g, "_");
+  // sshOptions: comma-free values safe for --ssh-option (ET may split on commas)
+  const sshOptions = [];
+  // configLines: options that need commas or spaces, written to config file
+  const configLines = [];
+  const askpassEntries = [];
+  const artifacts = [tempDir];
+
+  // Copy known_hosts from real ~/.ssh for host key verification
+  const realSshDir = path.join(os.homedir(), ".ssh");
+  const knownHostsPath = path.join(sshDir, "known_hosts");
+  copyIfExists(path.join(realSshDir, "known_hosts"), knownHostsPath);
+  if (fs.existsSync(knownHostsPath)) {
+    sshOptions.push(`UserKnownHostsFile=${normalizeSshConfigPath(knownHostsPath)}`);
+  }
+
+  // Port
+  if (options.port && options.port !== 22) {
+    sshOptions.push(`Port=${options.port}`);
+  }
+
+  // Private key
+  const identityPaths = [];
+  let tempKeyPath = null;
+  if (options.privateKey) {
+    tempKeyPath = path.join(sshDir, `${safeId}-key`);
+    writeSecureFile(tempKeyPath, options.privateKey, 0o600);
+    identityPaths.push(tempKeyPath);
+    if (options.passphrase) {
+      const passphrasePath = path.join(sshDir, `${safeId}-passphrase.txt`);
+      writeSecureFile(passphrasePath, `${options.passphrase}\n`, 0o600);
+      addAskpassEntry(askpassEntries, "passphrase", createPassphrasePromptMatchers(tempKeyPath), passphrasePath);
+    }
+  }
+
+  // Certificate
+  if (options.certificate) {
+    const certPath = path.join(sshDir, `${safeId}-cert.pub`);
+    writeSecureFile(certPath, options.certificate, 0o600);
+    sshOptions.push(`CertificateFile=${normalizeSshConfigPath(certPath)}`);
+  }
+
+  for (const idPath of identityPaths) {
+    sshOptions.push(`IdentityFile=${normalizeSshConfigPath(idPath)}`);
+  }
+
+  if (identityPaths.length > 0 || options.authMethod === "key" || options.authMethod === "certificate") {
+    sshOptions.push("IdentitiesOnly=yes");
+  }
+
+  // Password
+  const hasPassword = typeof options.password === "string" && options.password.length > 0;
+  if (hasPassword) {
+    const passwordPath = path.join(sshDir, `${safeId}-password.txt`);
+    writeSecureFile(passwordPath, `${options.password}\n`, 0o600);
+    addAskpassEntry(askpassEntries, "password", createPasswordPromptMatchers({
+      hostname: options.hostname,
+      username: options.username,
+      port: options.port,
+    }), passwordPath);
+  }
+
+  // Auth method preferences
+  // NOTE: values with commas (e.g. "password,keyboard-interactive") MUST go into
+  // the config file — ET on Windows passes --ssh-option values through cmd.exe
+  // which treats commas as argument delimiters.
+  if (options.authMethod === "password") {
+    sshOptions.push("PubkeyAuthentication=no");
+    configLines.push("PreferredAuthentications password,keyboard-interactive");
+  } else if (identityPaths.length > 0 && hasPassword) {
+    configLines.push("PreferredAuthentications publickey,password,keyboard-interactive");
+  } else if (identityPaths.length > 0) {
+    sshOptions.push("PreferredAuthentications=publickey");
+  } else if (hasPassword) {
+    configLines.push("PreferredAuthentications password,keyboard-interactive");
+  }
+
+  sshOptions.push("KbdInteractiveAuthentication=yes");
+  sshOptions.push("NumberOfPasswordPrompts=1");
+
+  // Write config file with comma/space-containing options (if any)
+  if (configLines.length > 0) {
+    const configPath = path.join(sshDir, "config");
+    writeSecureFile(configPath, configLines.join("\n") + "\n", 0o600);
+  }
+
+  // Create askpass artifacts
+  const askpass = createEtAskpassArtifacts(sshDir, askpassEntries);
+
+  const userHost = `${options.username || os.userInfo().username}@${options.hostname}`;
+
+  return {
+    userHost,
+    sshOptions,
+    env: {
+      // Set HOME/USERPROFILE so ssh finds .ssh/config for comma-containing options
+      ...(configLines.length > 0 ? { HOME: tempDir, USERPROFILE: tempDir } : {}),
+      ...askpass.env,
+    },
+    artifacts: [tempDir, ...askpass.artifacts],
+  };
+}
+
+function cleanupSessionExternalAuthArtifacts(session) {
+  if (!session || session.externalAuthArtifactsCleaned) return;
+  session.externalAuthArtifactsCleaned = true;
+  const artifacts = Array.isArray(session.externalAuthArtifacts)
+    ? session.externalAuthArtifacts
+    : [];
+
+  for (const artifactPath of artifacts) {
+    try {
+      fs.rmSync(artifactPath, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+  }
 }
 
 /**
@@ -1416,11 +1722,6 @@ async function startEtSession(event, options) {
 
   const args = [];
 
-  // Non-standard SSH port → --ssh-option Port=PORT (et passes it as ssh -oPort=PORT)
-  if (options.port && options.port !== 22) {
-    args.push('--ssh-option', `Port=${options.port}`);
-  }
-
   // ET server port (default 2022)
   if (options.etPort && options.etPort !== 2022) {
     args.push('-p', String(options.etPort));
@@ -1436,14 +1737,24 @@ async function startEtSession(event, options) {
     args.push('-f');
   }
 
-  const userHost = options.username
-    ? `${options.username}@${options.hostname}`
-    : options.hostname;
-  args.push(userHost);
+  let sshEnvironment;
+  try {
+    sshEnvironment = prepareEtSshEnvironment(sessionId, options);
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : String(err));
+  }
+
+  // Pass all SSH options inline via --ssh-option (bypasses config file lookup)
+  for (const opt of sshEnvironment.sshOptions) {
+    args.push('--ssh-option', opt);
+  }
+
+  args.push(sshEnvironment.userHost);
 
   const env = {
     ...process.env,
     ...(options.env || {}),
+    ...(sshEnvironment?.env || {}),
     TERM: 'xterm-256color',
   };
 
@@ -1471,6 +1782,8 @@ async function startEtSession(event, options) {
       label: options.label || options.hostname || 'ET Session',
       shellKind: 'posix',
       shellExecutable: 'remote-shell',
+      externalAuthArtifacts: sshEnvironment?.artifacts || [],
+      externalAuthArtifactsCleaned: false,
       flushPendingData: null,
       lastIdlePrompt: "",
       lastIdlePromptAt: 0,
@@ -1529,6 +1842,7 @@ async function startEtSession(event, options) {
 
     proc.onExit((evt) => {
       flushEt();
+      cleanupSessionExternalAuthArtifacts(session);
       sessionLogStreamManager.stopStream(sessionId);
       sessions.delete(sessionId);
       const contents = electronModule.webContents.fromId(session.webContentsId);
@@ -1537,6 +1851,12 @@ async function startEtSession(event, options) {
 
     return { sessionId };
   } catch (err) {
+    if (sshEnvironment?.artifacts) {
+      cleanupSessionExternalAuthArtifacts({
+        externalAuthArtifacts: sshEnvironment.artifacts,
+        externalAuthArtifactsCleaned: false,
+      });
+    }
     console.error("[ET] Failed to start EternalTerminal session:", err.message);
     throw err;
   }
@@ -1759,6 +2079,7 @@ function closeSession(event, payload) {
   try {
     session.zmodemSentry?.cancel();
     session.flushPendingData?.();
+    cleanupSessionExternalAuthArtifacts(session);
     if (session.stream) {
       session.stream.close();
       session.conn?.end();
@@ -1960,6 +2281,7 @@ function cleanupAllSessions() {
   for (const [sessionId, session] of sessions) {
     try {
       session.zmodemSentry?.cancel();
+      cleanupSessionExternalAuthArtifacts(session);
       if (session.stream) {
         session.stream.close();
         session.conn?.end();

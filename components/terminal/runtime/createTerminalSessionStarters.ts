@@ -948,13 +948,83 @@ export const createTerminalSessionStarters = (ctx: TerminalSessionStartersContex
       return;
     }
 
+    const pendingAuth = ctx.pendingAuthRef.current;
+    const resolvedAuth = resolveHostAuth({
+      host: ctx.host,
+      keys: ctx.keys,
+      identities: ctx.identities,
+      override: pendingAuth
+        ? {
+          authMethod: pendingAuth.authMethod,
+          username: pendingAuth.username,
+          password: pendingAuth.password,
+          keyId: pendingAuth.keyId,
+          passphrase: pendingAuth.passphrase,
+        }
+        : null,
+    });
+
+    const effectiveUsername = resolvedAuth.username || "root";
+    const key = resolvedAuth.key;
+    const effectivePassword = sanitizeCredentialValue(resolvedAuth.password);
+    const effectivePassphrase = sanitizeCredentialValue(resolvedAuth.passphrase);
+    const hasEncryptedPrimaryPassword = isEncryptedCredentialPlaceholder(resolvedAuth.password);
+    const hasEncryptedPrimaryKey = isEncryptedCredentialPlaceholder(key?.privateKey);
+    const hasEncryptedPrimaryPassphrase = isEncryptedCredentialPlaceholder(resolvedAuth.passphrase);
+
+    const needsCredentialReentry =
+      (resolvedAuth.authMethod === "password" && hasEncryptedPrimaryPassword && !effectivePassword) ||
+      (resolvedAuth.authMethod !== "password" && hasEncryptedPrimaryKey && !sanitizeCredentialValue(key?.privateKey) && !effectivePassword) ||
+      (resolvedAuth.authMethod !== "password" && hasEncryptedPrimaryPassphrase && !effectivePassphrase);
+
+    if (needsCredentialReentry) {
+      ctx.setError(null);
+      ctx.setNeedsAuth(true);
+      ctx.setAuthRetryMessage(
+        tr(
+          "terminal.auth.credentialsUnavailable",
+          "Saved credentials cannot be decrypted on this device. Please re-enter and save them again.",
+        ),
+      );
+      ctx.setAuthPassword("");
+      ctx.setProgressLogs((prev) => [
+        ...prev,
+        tr(
+          "terminal.auth.credentialsUnavailable",
+          "Saved credentials cannot be decrypted on this device. Please re-enter and save them again.",
+        ),
+      ]);
+      ctx.setStatus("connecting");
+      return;
+    }
+
+    if (ctx.host.proxyConfig?.host && ctx.host.proxyConfig?.port) {
+      const message = tr(
+        "terminal.et.proxyUnsupported",
+        "EternalTerminal does not currently support Netcatty proxy settings. Use SSH or remove the proxy for this host.",
+      );
+      ctx.setError(message);
+      term.writeln(`\r\n[${message}]`);
+      ctx.updateStatus("disconnected");
+      return;
+    }
+
     try {
       const etEnv = buildTermEnv(ctx.host, ctx.terminalSettings);
       const id = await ctx.terminalBackend.startEtSession({
         sessionId: ctx.sessionId,
+        hostLabel: ctx.host.label,
         hostname: ctx.host.hostname,
-        username: ctx.host.username || "root",
+        username: effectiveUsername,
         port: ctx.host.port || 22,
+        password: effectivePassword,
+        privateKey: key?.privateKey,
+        certificate: key?.certificate,
+        publicKey: key?.publicKey,
+        keyId: key?.id,
+        keySource: key?.source,
+        authMethod: resolvedAuth.authMethod,
+        passphrase: key ? (effectivePassphrase || sanitizeCredentialValue(key.passphrase)) : undefined,
         etPort: ctx.host.etPort,
         terminalPath: ctx.host.etTerminalPath,
         agentForwarding: ctx.host.agentForwarding,
