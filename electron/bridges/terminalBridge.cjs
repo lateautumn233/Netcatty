@@ -8,7 +8,7 @@ const fs = require("node:fs");
 const net = require("node:net");
 const { randomUUID } = require("node:crypto");
 const path = require("node:path");
-const { execFileSync } = require("node:child_process");
+const { execFileSync, execFile } = require("node:child_process");
 const { StringDecoder } = require("node:string_decoder");
 const pty = require("node-pty");
 const { SerialPort } = require("serialport");
@@ -508,6 +508,44 @@ function cleanupSessionExternalAuthArtifacts(session) {
       // ignore cleanup failures
     }
   }
+}
+
+/**
+ * Execute a remote command on an ET session by spawning a system ssh process.
+ * Reuses the SSH environment (keys, config, askpass) already prepared by
+ * prepareEtSshEnvironment() for the ET connection.
+ *
+ * @param {object} session - ET session object (must have sshEnv, sshOptions, sshUserHost)
+ * @param {string} command - Remote command to execute
+ * @param {number} [timeoutMs=5000] - Timeout in milliseconds
+ * @returns {Promise<{success: boolean, stdout?: string, stderr?: string, error?: string}>}
+ */
+function execOnEtSession(session, command, timeoutMs = 5000) {
+  if (!session?.sshUserHost || session.externalAuthArtifactsCleaned) {
+    return Promise.resolve({ success: false, error: 'ET SSH environment not available' });
+  }
+
+  const sshCmd = process.platform === 'win32' ? findExecutable('ssh') : 'ssh';
+  const args = ['-o', 'BatchMode=no', '-o', 'StrictHostKeyChecking=accept-new'];
+  for (const opt of session.sshOptions) {
+    args.push('-o', opt);
+  }
+  args.push(session.sshUserHost, command);
+
+  return new Promise((resolve) => {
+    execFile(sshCmd, args, {
+      env: { ...process.env, ...session.sshEnv },
+      timeout: timeoutMs,
+      encoding: 'utf8',
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        resolve({ success: false, error: err.message, stdout, stderr });
+      } else {
+        resolve({ success: true, stdout: stdout || '', stderr: stderr || '' });
+      }
+    });
+  });
 }
 
 /**
@@ -1297,6 +1335,10 @@ async function startEtSession(event, options) {
       shellExecutable: 'remote-shell',
       externalAuthArtifacts: sshEnvironment?.artifacts || [],
       externalAuthArtifactsCleaned: false,
+      // SSH environment for remote command execution (stats, distro detection)
+      sshEnv: sshEnvironment?.env || {},
+      sshOptions: sshEnvironment?.sshOptions || [],
+      sshUserHost: sshEnvironment?.userHost || '',
       flushPendingData: null,
       lastIdlePrompt: "",
       lastIdlePromptAt: 0,
@@ -1782,4 +1824,5 @@ module.exports = {
   cleanupAllSessions,
   getDefaultShell,
   validatePath,
+  execOnEtSession,
 };
