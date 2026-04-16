@@ -186,9 +186,18 @@ declare global {
     }): Promise<string>;
     startEtSession?(options: {
       sessionId?: string;
+      hostLabel?: string;
       hostname: string;
       username?: string;
       port?: number;
+      password?: string;
+      privateKey?: string;
+      certificate?: string;
+      publicKey?: string;
+      keyId?: string;
+      keySource?: 'generated' | 'imported';
+      authMethod?: 'password' | 'key' | 'certificate';
+      passphrase?: string;
       etPort?: number;
       terminalPath?: string;
       agentForwarding?: boolean;
