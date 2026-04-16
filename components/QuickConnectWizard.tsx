@@ -22,7 +22,7 @@ import { Label } from "./ui/label";
 import { ScrollArea } from "./ui/scroll-area";
 
 // Protocol types supported for quick connect
-type Protocol = "ssh" | "mosh" | "telnet";
+type Protocol = "ssh" | "mosh" | "et" | "telnet";
 
 // Wizard steps
 type WizardStep = "protocol" | "username" | "knownhost" | "auth";
@@ -91,6 +91,8 @@ const QuickConnectWizard: React.FC<QuickConnectWizardProps> = ({
         return 22;
       case "mosh":
         return 22;
+      case "et":
+        return 22;
       case "telnet":
         return 23;
       default:
@@ -156,12 +158,13 @@ const QuickConnectWizard: React.FC<QuickConnectWizardProps> = ({
       group: "",
       tags: [],
       os: "linux",
-      protocol: protocol === "mosh" ? "ssh" : protocol,
+      protocol: protocol === "mosh" || protocol === "et" ? "ssh" : protocol,
       authMethod: authMethod,
       password: authMethod === "password" ? password : undefined,
       identityFileId:
         authMethod === "key" ? selectedKeyId || undefined : undefined,
       moshEnabled: protocol === "mosh",
+      etEnabled: protocol === "et",
       // Set telnet-specific fields when using telnet protocol
       telnetEnabled: protocol === "telnet",
       telnetPort: protocol === "telnet" ? effectivePort : undefined,
@@ -293,6 +296,51 @@ const QuickConnectWizard: React.FC<QuickConnectWizardProps> = ({
               onClick={(e) => e.stopPropagation()}
               placeholder="mosh --server=/path/server host"
               className="w-40 h-7 text-xs"
+            />
+          </div>
+        </button>
+
+        {/* EternalTerminal */}
+        <button
+          className={cn(
+            "w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-all text-left",
+            protocol === "et"
+              ? "border-primary bg-primary/5"
+              : "border-border/60 hover:border-border hover:bg-secondary/50",
+          )}
+          onClick={() => handleProtocolSelect("et")}
+        >
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                "h-10 w-10 rounded-lg flex items-center justify-center",
+                protocol === "et"
+                  ? "bg-primary/20 text-primary"
+                  : "bg-muted text-muted-foreground",
+              )}
+            >
+              <Globe size={18} />
+            </div>
+            <div>
+              <div className="font-medium">EternalTerminal</div>
+              <div className="text-xs text-muted-foreground font-mono">
+                et {target.hostname}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{t("protocolSelect.port")}</span>
+            <Input
+              type="number"
+              value={protocol === "et" ? port : 22}
+              onChange={(e) => {
+                setPort(parseInt(e.target.value) || 22);
+                setProtocol("et");
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-16 h-7 text-xs text-center"
+              min={1}
+              max={65535}
             />
           </div>
         </button>

@@ -754,7 +754,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       const isSerial = host.protocol === 'serial' || host.id?.startsWith('serial-');
       const isTelnet = host.protocol === 'telnet';
       const isMosh = host.protocol === 'mosh' || host.moshEnabled;
-      const isSSH = !isLocal && !isSerial && !isTelnet && !isMosh;
+      const isEt = host.protocol === 'et' || host.etEnabled;
+      const isSSH = !isLocal && !isSerial && !isTelnet && !isMosh && !isEt;
       if (isSSH) {
         setSessionEncoding(id, terminalEncodingRef.current);
         return;
@@ -866,6 +867,10 @@ const TerminalComponent: React.FC<TerminalProps> = ({
           setStatus("connecting");
           setProgressLogs(["Initializing Mosh connection..."]);
           await sessionStarters.startMosh(term);
+        } else if (host.etEnabled) {
+          setStatus("connecting");
+          setProgressLogs(["Initializing EternalTerminal connection..."]);
+          await sessionStarters.startEt(term);
         } else {
           const resolvedAuth = resolveHostAuth({ host, keys, identities });
           const hasPassword = !!resolvedAuth.password;
@@ -1533,6 +1538,8 @@ const TerminalComponent: React.FC<TerminalProps> = ({
         sessionStarters.startTelnet(term);
       } else if (host.moshEnabled) {
         sessionStarters.startMosh(term);
+      } else if (host.etEnabled) {
+        sessionStarters.startEt(term);
       } else {
         sessionStarters.startSSH(term);
       }

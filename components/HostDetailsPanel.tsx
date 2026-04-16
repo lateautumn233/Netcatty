@@ -1561,6 +1561,25 @@ const HostDetailsPanel: React.FC<HostDetailsPanelProps> = ({
           />
         </Card>
 
+        <Card className="p-3 space-y-3 bg-card border-border/80">
+          <div className="flex items-center gap-2">
+            <Wifi size={14} className="text-muted-foreground" />
+            <p className="text-xs font-semibold">{t("hostDetails.section.et")}</p>
+          </div>
+          <ToggleRow
+            label="EternalTerminal"
+            enabled={!!form.etEnabled}
+            onToggle={() => {
+              const enabling = !form.etEnabled;
+              if (enabling && form.deviceType === 'network') {
+                setForm(prev => ({ ...prev, etEnabled: true, deviceType: undefined }));
+              } else {
+                update("etEnabled", enabling);
+              }
+            }}
+          />
+        </Card>
+
         {/* Agent Forwarding */}
         <Card className="p-3 space-y-2 bg-card border-border/80">
           <div className="flex items-center gap-2">
@@ -1591,7 +1610,7 @@ const HostDetailsPanel: React.FC<HostDetailsPanelProps> = ({
         </Card>
 
         {/* Network Device Mode — only for SSH hosts without Mosh (serial already uses raw mode) */}
-        {(!form.protocol || form.protocol === 'ssh') && !form.moshEnabled && (
+        {(!form.protocol || form.protocol === 'ssh') && !form.moshEnabled && !form.etEnabled && (
         <Card className="p-3 space-y-2 bg-card border-border/80">
           <div className="flex items-center gap-2">
             <Router size={14} className="text-muted-foreground" />

@@ -42,6 +42,9 @@ const getProtocolInfo = (host: Host): { i18nKey: string; showPort: boolean; port
     if (host.moshEnabled) {
         return { i18nKey: 'terminal.connection.protocol.mosh', showPort: true, port: host.port || 22 };
     }
+    if (host.etEnabled) {
+        return { i18nKey: 'terminal.connection.protocol.et', showPort: true, port: host.port || 22 };
+    }
     const protocol = host.protocol || 'ssh';
     switch (protocol) {
         case 'local':
@@ -51,6 +54,8 @@ const getProtocolInfo = (host: Host): { i18nKey: string; showPort: boolean; port
             return { i18nKey: 'terminal.connection.protocol.telnet', showPort: true, port: host.telnetPort ?? host.port ?? 23 };
         case 'mosh':
             return { i18nKey: 'terminal.connection.protocol.mosh', showPort: true, port: host.port || 22 };
+        case 'et':
+            return { i18nKey: 'terminal.connection.protocol.et', showPort: true, port: host.port || 22 };
         case 'serial':
             return { i18nKey: 'terminal.connection.protocol.serial', showPort: false, port: 0 };
         case 'ssh':
