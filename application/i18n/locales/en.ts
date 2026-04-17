@@ -1238,6 +1238,7 @@ const en: Messages = {
   'terminal.toolbar.sftp': 'SFTP',
   'terminal.toolbar.more': 'More actions',
   'terminal.toolbar.scripts': 'Scripts',
+  'terminal.toolbar.history': 'Command history',
   'terminal.toolbar.library': 'Library',
   'terminal.toolbar.noSnippets': 'No snippets available',
   'terminal.toolbar.terminalSettings': 'Terminal settings',
@@ -2023,6 +2024,21 @@ const en: Messages = {
   'ai.safety.blocklist.reset': 'Reset to defaults',
   'ai.safety.blocklist.add': 'Add pattern',
   'ai.safety.note': 'Command Blocklist, Command Timeout, and Observer mode are enforced at the MCP Server level, applying to all agent types. Confirm mode and Max Iterations are fully enforced for the built-in agent; ACP agents may have their own internal controls for these settings.',
+
+  // Remote command history side panel
+  'history.searchPlaceholder': 'Search history...',
+  'history.loading': 'Loading remote history...',
+  'history.meta.count': '{count} commands',
+  'history.empty.noSession': 'Open a remote session to view its command history.',
+  'history.empty.unsupportedProtocol': 'Command history is only available for SSH/Mosh/ET sessions.',
+  'history.empty.noHistory': 'No command history found on this host.',
+  'history.action.refresh': 'Refresh',
+  'history.action.retry': 'Retry',
+  'history.action.copy': 'Copy',
+  'history.action.copied': 'Copied',
+  'history.action.paste': 'Paste to terminal',
+  'history.action.run': 'Run in terminal',
+  'history.action.saveAsSnippet': 'Save as snippet',
 };
 
 export default en;
