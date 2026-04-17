@@ -801,6 +801,7 @@ const zhCN: Messages = {
   'terminal.toolbar.sftp': 'SFTP',
   'terminal.toolbar.more': '更多操作',
   'terminal.toolbar.scripts': '脚本',
+  'terminal.toolbar.history': '命令历史',
   'terminal.toolbar.library': '库',
   'terminal.toolbar.noSnippets': '暂无代码片段',
   'terminal.toolbar.terminalSettings': '终端设置',
@@ -1988,6 +1989,21 @@ const zhCN: Messages = {
   'ai.safety.blocklist.reset': '恢复默认',
   'ai.safety.blocklist.add': '添加规则',
   'ai.safety.note': '命令黑名单、命令超时和观察者模式通过 MCP Server 层强制执行，对所有 Agent 类型生效。确认模式和最大迭代次数对内置 Agent 完全强制执行；ACP Agent 可能有自己的内部控制。',
+
+  // 远程命令历史侧边栏
+  'history.searchPlaceholder': '搜索历史命令...',
+  'history.loading': '正在读取远程历史...',
+  'history.meta.count': '{count} 条',
+  'history.empty.noSession': '请先打开一个远程会话以查看其命令历史。',
+  'history.empty.unsupportedProtocol': '仅 SSH/Mosh/ET 会话支持命令历史。',
+  'history.empty.noHistory': '该主机上未找到命令历史。',
+  'history.action.refresh': '刷新',
+  'history.action.retry': '重试',
+  'history.action.copy': '复制',
+  'history.action.copied': '已复制',
+  'history.action.paste': '粘贴到终端',
+  'history.action.run': '在终端中运行',
+  'history.action.saveAsSnippet': '保存为代码片段',
 };
 
 export default zhCN;
