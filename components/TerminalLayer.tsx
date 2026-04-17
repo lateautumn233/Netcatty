@@ -1,4 +1,4 @@
-import { Circle, Columns2, FolderTree, MessageSquare, PanelLeft, PanelRight, Palette, Plus, Search, Server, X, Zap } from 'lucide-react';
+import { Circle, Columns2, FolderTree, History, MessageSquare, PanelLeft, PanelRight, Palette, Plus, Search, Server, X, Zap } from 'lucide-react';
 import React, { createContext, memo, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useActiveTabId } from '../application/state/activeTabStore';
 import {
@@ -44,6 +44,8 @@ import { DistroAvatar } from './DistroAvatar';
 import Terminal from './Terminal';
 import { SftpSidePanel } from './SftpSidePanel';
 import { ScriptsSidePanel } from './ScriptsSidePanel';
+import { HistorySidePanel } from './HistorySidePanel';
+import { useRemoteHistoryState } from '../application/state/useRemoteHistoryState';
 import { ThemeSidePanel } from './terminal/ThemeSidePanel';
 import { focusTerminalSessionInput } from './terminal/focusTerminalSession';
 import { AIChatSidePanel } from './AIChatSidePanel';
@@ -59,7 +61,7 @@ import { setupMcpApprovalBridge } from '../infrastructure/ai/shared/approvalGate
 import { resolveScriptsSidePanelShortcutIntent } from '../application/state/resolveSnippetsShortcutIntent';
 import { terminalLayerAreEqual } from './terminalLayerMemo';
 
-type SidePanelTab = 'sftp' | 'scripts' | 'theme' | 'ai';
+type SidePanelTab = 'sftp' | 'scripts' | 'history' | 'theme' | 'ai';
 
 type WorkspaceRect = { x: number; y: number; w: number; h: number };
 
@@ -1513,6 +1515,11 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     handleSwitchSidePanelTab('ai');
   }, [handleSwitchSidePanelTab]);
 
+  // Open remote command history side panel
+  const handleOpenHistory = useCallback(() => {
+    handleSwitchSidePanelTab('history');
+  }, [handleSwitchSidePanelTab]);
+
   // Listen for global AI panel toggle (from TopTabs button)
   useEffect(() => {
     const handler = () => handleOpenAI();
@@ -1570,6 +1577,17 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     const textarea = pane?.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null;
     textarea?.focus();
   }, [activeWorkspace?.focusedSessionId, activeSession?.id, terminalBackend]);
+
+  // Remote command history (per-host cache, fetched via SSH exec)
+  const remoteHistory = useRemoteHistoryState();
+  const handleHistoryPaste = useCallback(
+    (command: string) => handleSnippetClickForFocusedSession(command, true),
+    [handleSnippetClickForFocusedSession],
+  );
+  const handleHistoryRun = useCallback(
+    (command: string) => handleSnippetClickForFocusedSession(command, false),
+    [handleSnippetClickForFocusedSession],
+  );
 
   // Resolve theme change handler for the focused session
   const focusedHost = useMemo((): Host | null => {
@@ -2305,6 +2323,23 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                     <Button
                       variant="ghost"
                       size="icon"
+                      data-tab-id="history"
+                      data-tab-type="sidepanel"
+                      data-state={activeSidePanelTab === 'history' ? 'active' : 'inactive'}
+                      className="netcatty-tab h-7 w-7 rounded-md p-0 hover:bg-transparent"
+                      style={{
+                        color: activeSidePanelTab === 'history'
+                          ? 'var(--terminal-sidepanel-fg)'
+                          : 'var(--terminal-sidepanel-muted)',
+                      }}
+                      onClick={handleOpenHistory}
+                      title="History"
+                    >
+                      <History size={15} />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       data-tab-id="theme"
                       data-tab-type="sidepanel"
                       data-state={activeSidePanelTab === 'theme' ? 'active' : 'inactive'}
@@ -2415,6 +2450,21 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                         snippets={snippets}
                         packages={snippetPackages}
                         onSnippetClick={handleSnippetClickForFocusedSession}
+                      />
+                    </div>
+                  )}
+
+                  {/* History sub-panel */}
+                  {activeSidePanelTab === 'history' && (
+                    <div className="absolute inset-0 z-10">
+                      <HistorySidePanel
+                        focusedHost={focusedHost}
+                        focusedSessionId={focusedSessionId ?? activeSession?.id ?? null}
+                        state={remoteHistory.getState(focusedHost?.id)}
+                        onFetch={remoteHistory.fetch}
+                        onPasteToTerminal={handleHistoryPaste}
+                        onRunInTerminal={handleHistoryRun}
+                        isVisible
                       />
                     </div>
                   )}
@@ -2598,6 +2648,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                   onOpenSftp={handleOpenSftp}
                   onOpenScripts={handleOpenScripts}
                   onOpenTheme={handleOpenTheme}
+                  onOpenHistory={handleOpenHistory}
                   onCloseSession={handleCloseSession}
                   onStatusChange={handleStatusChange}
                   onSessionExit={handleSessionExit}
