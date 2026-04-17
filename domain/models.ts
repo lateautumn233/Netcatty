@@ -856,6 +856,18 @@ export interface ShellHistoryEntry {
   timestamp: number;
 }
 
+// Remote History - commands read from the server's shell history files
+// (~/.bash_history and ~/.zsh_history). Unlike ShellHistoryEntry which is
+// captured locally as the user types, this is pulled from the server.
+export type RemoteHistorySource = 'bash' | 'zsh';
+
+export interface RemoteHistoryEntry {
+  id: string;
+  command: string;
+  source: RemoteHistorySource;
+  timestamp?: number; // Only populated when the history file contains one (e.g., zsh EXTENDED_HISTORY)
+}
+
 // Connection Log - records connection history
 export interface ConnectionLog {
   id: string;
