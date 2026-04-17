@@ -1942,6 +1942,94 @@ async function getSessionDistroInfo(_event, payload) {
   });
 }
 
+/**
+ * Read the remote shell history files (~/.bash_history and ~/.zsh_history)
+ * from an active SSH/ET session via a separate exec channel. The interactive
+ * shell is not touched. Missing files are tolerated — the stdout for those
+ * is empty, and stderr is suppressed by redirecting to /dev/null.
+ *
+ * Returns { success: true, bash: string, zsh: string } on success.
+ */
+async function readRemoteHistory(_event, payload) {
+  const { sessionId, limit } = payload || {};
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return { success: false, error: 'Session not found' };
+  }
+
+  const safeLimit = Number.isFinite(limit) && limit > 0 && limit <= 10000
+    ? Math.floor(limit)
+    : 1000;
+
+  // Use unique markers so we can split the two files out of a single exec
+  // invocation. tail handles the "file missing" case by printing nothing
+  // when we redirect stderr.
+  const BASH_MARKER = '__NETCATTY_HISTORY_BASH__';
+  const ZSH_MARKER = '__NETCATTY_HISTORY_ZSH__';
+  const command =
+    `printf '%s\\n' '${BASH_MARKER}'; ` +
+    `tail -n ${safeLimit} "$HOME/.bash_history" 2>/dev/null || true; ` +
+    `printf '%s\\n' '${ZSH_MARKER}'; ` +
+    `tail -n ${safeLimit} "$HOME/.zsh_history" 2>/dev/null || true`;
+
+  const parse = (stdout) => {
+    const bashIdx = stdout.indexOf(BASH_MARKER);
+    const zshIdx = stdout.indexOf(ZSH_MARKER);
+    if (bashIdx < 0 || zshIdx < 0 || zshIdx < bashIdx) {
+      return { bash: '', zsh: '' };
+    }
+    const bashStart = bashIdx + BASH_MARKER.length;
+    const bashSection = stdout.slice(bashStart, zshIdx).replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+    const zshSection = stdout.slice(zshIdx + ZSH_MARKER.length).replace(/^\r?\n/, '');
+    return { bash: bashSection, zsh: zshSection };
+  };
+
+  // ET session: use system ssh for exec
+  if (!session.conn && session.type === 'et' && session.sshUserHost) {
+    const result = await execOnEtSession(session, command, 8000);
+    if (!result.success) return result;
+    const { bash, zsh } = parse(result.stdout || '');
+    return { success: true, bash, zsh };
+  }
+
+  if (!session.conn) {
+    return { success: false, error: 'Session not connected' };
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let activeStream = null;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      settle({ success: false, error: 'Timeout reading remote history' });
+      try { if (activeStream) activeStream.close(); } catch { /* ignore */ }
+    }, 8000);
+    try {
+      session.conn.exec(command, (err, stream) => {
+        if (err) {
+          settle({ success: false, error: err.message || String(err) });
+          return;
+        }
+        activeStream = stream;
+        let stdout = '';
+        stream.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+        stream.stderr?.on('data', () => { /* swallow */ });
+        stream.on('close', () => {
+          const { bash, zsh } = parse(stdout);
+          settle({ success: true, bash, zsh });
+        });
+      });
+    } catch (err) {
+      settle({ success: false, error: err?.message || String(err) });
+    }
+  });
+}
+
 async function getSessionPwd(event, payload) {
   const { sessionId } = payload;
   const session = sessions.get(sessionId);
@@ -2567,6 +2655,7 @@ function registerHandlers(ipcMain) {
   ipcMain.handle("netcatty:ssh:pwd", getSessionPwd);
   ipcMain.handle("netcatty:ssh:remoteInfo", getSessionRemoteInfo);
   ipcMain.handle("netcatty:ssh:distroInfo", getSessionDistroInfo);
+  ipcMain.handle("netcatty:ssh:readRemoteHistory", readRemoteHistory);
   ipcMain.handle("netcatty:ssh:listdir", listSessionDir);
   ipcMain.handle("netcatty:ssh:stats", getServerStats);
   ipcMain.handle("netcatty:key:generate", generateKeyPair);
