@@ -709,8 +709,7 @@ jobs:
             artifacts/*.blockmap
           generate_release_notes: true
           fail_on_unmatched_files: false
-          token: ${{ secrets.RELEASE_TOKEN }}
-
+          token: ${{ secrets.GITHUB_TOKEN }}
   homebrew-tap:
     name: bump homebrew tap
     runs-on: ubuntu-latest
