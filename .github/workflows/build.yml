@@ -292,7 +292,16 @@ jobs:
           APPLE_ID: ${{ matrix.name == 'macos' && secrets.APPLE_ID || '' }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.name == 'macos' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ matrix.name == 'macos' && secrets.APPLE_TEAM_ID || '' }}
-        run: npm run ${{ matrix.pack_script }}
+        shell: bash
+        run: |
+          if [[ "${{ matrix.name }}" == "macos" ]]; then
+            if [[ -z "${CSC_LINK}" || -z "${CSC_KEY_PASSWORD}" || -z "${APPLE_ID}" || -z "${APPLE_APP_SPECIFIC_PASSWORD}" || -z "${APPLE_TEAM_ID}" ]]; then
+              echo "macOS signing secrets are incomplete, building unsigned package."
+              CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack:mac -- --config.mac.identity=null --config.mac.hardenedRuntime=false --config.mac.notarize=false
+              exit 0
+            fi
+          fi
+          npm run ${{ matrix.pack_script }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
