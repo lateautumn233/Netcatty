@@ -52,11 +52,14 @@ export const QuickAddSnippetDialog: React.FC<QuickAddSnippetDialogProps> = ({
   // Listen for the global "add snippet" request dispatched by the
   // terminal-side ScriptsSidePanel + button. We reset form state on
   // every open so stale input from a previous cancel does not leak.
+  // An optional `detail.command` / `detail.label` lets callers (e.g., the
+  // History side panel's "save as snippet" action) pre-fill the form.
   useEffect(() => {
-    const handler = () => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ command?: string; label?: string }>).detail;
       setEditing(null);
-      setLabel('');
-      setCommand('');
+      setLabel(detail?.label ?? '');
+      setCommand(detail?.command ?? '');
       setPackagePath('');
       setOpen(true);
     };
