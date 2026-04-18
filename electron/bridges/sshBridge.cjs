@@ -2047,10 +2047,40 @@ async function getSessionPwd(event, payload) {
       resolve({ success: false, error: 'Timeout getting pwd' });
     }, 5000);
 
-    // Find the interactive shell's cwd silently via a separate exec channel.
-    // Both the exec channel and the interactive shell share the same sshd
-    // parent ($PPID). We exclude our own PID ($$) to avoid reading our own cwd.
-    const cmd = `p=$(ps --ppid $PPID -o pid=,comm= 2>/dev/null | awk -v self=$$ '$1!=self && $2~/^(ba|z|fi|k|da)?sh$/{pid=$1}END{print pid}'); [ -n "$p" ] && readlink /proc/$p/cwd 2>/dev/null && exit 0; p=$(ps -e -o pid=,ppid=,comm= 2>/dev/null | awk -v pp=$PPID -v self=$$ '$1!=self && $2==pp && $3~/^(ba|z|fi|k|da)?sh$/{pid=$1}END{print pid}'); [ -n "$p" ] && readlink /proc/$p/cwd 2>/dev/null && exit 0; eval echo "~"`;
+    // POSIX sh script that:
+    //   1. Walks down the process tree from sshd ($PPID), picking the
+    //      deepest shell (bash/zsh/fish/ksh/dash/sh). Covers both fish
+    //      as the login shell and bash->fish as a child process.
+    //   2. Reads /proc/<pid>/cwd via readlink.
+    //   3. Falls back to $HOME if anything fails.
+    //
+    // CRITICAL — how this is invoked:
+    //   `exec sh -c 'eval "$(...)"'`
+    // `exec` makes sh *replace* the user's login shell (fish/bash/...)
+    // so the sh process keeps the same PID and $PPID = sshd. `eval`
+    // then runs the decoded script in that same sh — piping it into
+    // another `| sh` would put the script in a grandchild whose $PPID
+    // is the mid-pipeline subshell, not sshd, and the sibling lookup
+    // below would never find the interactive shell. We try GNU
+    // `base64 -d` first and fall back to BSD/macOS `base64 -D`.
+    const posixScript = `PARENT=$PPID
+SELF=$$
+find_child_shell() {
+  ps -e -o pid=,ppid=,comm= 2>/dev/null | awk -v pp="$1" -v self="$SELF" '$1!=self && $2==pp && $3~/^(ba|z|fi|k|da)?sh$/{print $1; exit}'
+}
+cand=$(find_child_shell "$PARENT")
+pid="$cand"
+while [ -n "$cand" ]; do
+  cand=$(find_child_shell "$cand")
+  [ -n "$cand" ] && pid="$cand"
+done
+if [ -n "$pid" ]; then
+  cwd=$(readlink /proc/$pid/cwd 2>/dev/null)
+  [ -n "$cwd" ] && printf '%s\\n' "$cwd" && exit 0
+fi
+printf '%s\\n' "$HOME"`;
+    const encoded = Buffer.from(posixScript, 'utf8').toString('base64');
+    const cmd = `exec sh -c 'eval "$(echo ${encoded} | (base64 -d 2>/dev/null || base64 -D 2>/dev/null))"'`;
 
     session.conn.exec(cmd, (err, stream) => {
       if (err) {
