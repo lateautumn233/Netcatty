@@ -1,15 +1,12 @@
 /**
  * HistorySidePanel — Termius-style remote shell history browser for the
  * terminal side panel. Reads ~/.bash_history and ~/.zsh_history from the
- * focused session and exposes search, paste-to-terminal, run-in-terminal,
- * and save-as-snippet actions.
+ * focused session and exposes search, paste-to-terminal, and
+ * save-as-snippet actions.
  */
 
 import {
-  Check,
-  ClipboardCopy,
   Clipboard as ClipboardIcon,
-  Play,
   RefreshCw,
   Save,
   Search,
@@ -29,7 +26,6 @@ export interface HistorySidePanelProps {
   state: RemoteHistoryHostState;
   onFetch: (sessionId: string, hostId: string) => void;
   onPasteToTerminal: (command: string) => void;
-  onRunInTerminal: (command: string) => void;
   isVisible?: boolean;
 }
 
@@ -41,12 +37,11 @@ const HistorySidePanelInner: React.FC<HistorySidePanelProps> = ({
   state,
   onFetch,
   onPasteToTerminal,
-  onRunInTerminal,
   isVisible = true,
 }) => {
   const { t } = useI18n();
   const [search, setSearch] = useState('');
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
 
   const protocol = focusedHost?.protocol;
   const isSupportedSession =
@@ -74,22 +69,26 @@ const HistorySidePanelInner: React.FC<HistorySidePanelProps> = ({
     onFetch(focusedSessionId, focusedHost.id);
   }, [focusedHost, focusedSessionId, onFetch]);
 
+  useEffect(() => {
+    setExpandedIds(new Set());
+  }, [focusedHost?.id]);
+
   const filtered = useMemo((): RemoteHistoryEntry[] => {
     if (!search.trim()) return state.entries;
     const q = search.toLowerCase();
     return state.entries.filter((e) => e.command.toLowerCase().includes(q));
   }, [state.entries, search]);
 
-  const handleCopy = useCallback(async (entry: RemoteHistoryEntry) => {
-    try {
-      await navigator.clipboard.writeText(entry.command);
-      setCopiedId(entry.id);
-      window.setTimeout(() => {
-        setCopiedId((current) => (current === entry.id ? null : current));
-      }, 1200);
-    } catch {
-      /* clipboard may be unavailable; swallow silently */
-    }
+  const handleToggleExpanded = useCallback((entryId: string) => {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(entryId)) {
+        next.delete(entryId);
+      } else {
+        next.add(entryId);
+      }
+      return next;
+    });
   }, []);
 
   const handleSaveAsSnippet = useCallback((entry: RemoteHistoryEntry) => {
@@ -204,16 +203,12 @@ const HistorySidePanelInner: React.FC<HistorySidePanelProps> = ({
             <HistoryRow
               key={entry.id}
               entry={entry}
-              isCopied={copiedId === entry.id}
-              onCopy={() => handleCopy(entry)}
+              isExpanded={expandedIds.has(entry.id)}
+              onToggleExpanded={() => handleToggleExpanded(entry.id)}
               onPaste={() => onPasteToTerminal(entry.command)}
-              onRun={() => onRunInTerminal(entry.command)}
               onSave={() => handleSaveAsSnippet(entry)}
               labels={{
-                copy: t('history.action.copy'),
-                copied: t('history.action.copied'),
                 paste: t('history.action.paste'),
-                run: t('history.action.run'),
                 save: t('history.action.saveAsSnippet'),
               }}
             />
@@ -226,49 +221,75 @@ const HistorySidePanelInner: React.FC<HistorySidePanelProps> = ({
 
 interface HistoryRowProps {
   entry: RemoteHistoryEntry;
-  isCopied: boolean;
-  onCopy: () => void;
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
   onPaste: () => void;
-  onRun: () => void;
   onSave: () => void;
   labels: {
-    copy: string;
-    copied: string;
     paste: string;
-    run: string;
     save: string;
   };
 }
 
 const HistoryRow: React.FC<HistoryRowProps> = memo(
-  ({ entry, isCopied, onCopy, onPaste, onRun, onSave, labels }) => (
-    <div className="group flex items-start gap-2 px-3 py-1.5 hover:bg-accent/50 transition-colors">
-      <div className="flex-1 min-w-0 pt-0.5">
-        <div className="font-mono text-[11px] whitespace-pre-wrap break-all leading-snug">
-          {entry.command}
-        </div>
-        {entry.timestamp && (
-          <div className="text-[10px] text-muted-foreground mt-0.5">
-            {new Date(entry.timestamp).toLocaleString()}
-          </div>
+  ({ entry, isExpanded, onToggleExpanded, onPaste, onSave, labels }) => {
+    const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      onToggleExpanded();
+    };
+
+    const handleMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+      if (event.detail > 1) {
+        event.preventDefault();
+      }
+    };
+
+    return (
+      <div
+        className={cn(
+          'group flex select-none items-start gap-2 px-3 py-1.5 hover:bg-accent/50 transition-colors cursor-pointer',
+          isExpanded && 'bg-accent/30',
         )}
+        role="button"
+        tabIndex={0}
+        aria-expanded={isExpanded}
+        title={isExpanded ? undefined : entry.command}
+        onClick={onToggleExpanded}
+        onKeyDown={handleKeyDown}
+        onMouseDown={handleMouseDown}
+      >
+        <div className="w-0 flex-1 min-w-0 pt-0.5">
+          <div
+            className={cn(
+              'font-mono text-[11px] leading-snug',
+              isExpanded ? 'whitespace-pre-wrap break-words' : 'truncate whitespace-nowrap',
+            )}
+            style={isExpanded ? { overflowWrap: 'anywhere' } : undefined}
+          >
+            {entry.command}
+          </div>
+          {isExpanded && entry.timestamp && (
+            <div className="text-[10px] text-muted-foreground mt-0.5">
+              {new Date(entry.timestamp).toLocaleString()}
+            </div>
+          )}
+        </div>
+        <div
+          className="flex shrink-0 items-center gap-0.5"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <IconButton title={labels.paste} onClick={onPaste}>
+            <ClipboardIcon size={12} />
+          </IconButton>
+          <IconButton title={labels.save} onClick={onSave}>
+            <Save size={12} />
+          </IconButton>
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-        <IconButton title={isCopied ? labels.copied : labels.copy} onClick={onCopy}>
-          {isCopied ? <Check size={12} /> : <ClipboardCopy size={12} />}
-        </IconButton>
-        <IconButton title={labels.paste} onClick={onPaste}>
-          <ClipboardIcon size={12} />
-        </IconButton>
-        <IconButton title={labels.run} onClick={onRun}>
-          <Play size={12} />
-        </IconButton>
-        <IconButton title={labels.save} onClick={onSave}>
-          <Save size={12} />
-        </IconButton>
-      </div>
-    </div>
-  ),
+    );
+  },
 );
 HistoryRow.displayName = 'HistoryRow';
 
