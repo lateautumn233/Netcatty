@@ -1484,10 +1484,6 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     (command: string) => handleSnippetClickForFocusedSession(command, true),
     [handleSnippetClickForFocusedSession],
   );
-  const handleHistoryRun = useCallback(
-    (command: string) => handleSnippetClickForFocusedSession(command, false),
-    [handleSnippetClickForFocusedSession],
-  );
 
   // Resolve theme change handler for the focused session
   const focusedHost = useMemo((): Host | null => {
@@ -2344,7 +2340,6 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                         state={remoteHistory.getState(focusedHost?.id)}
                         onFetch={remoteHistory.fetch}
                         onPasteToTerminal={handleHistoryPaste}
-                        onRunInTerminal={handleHistoryRun}
                         isVisible
                       />
                     </div>
