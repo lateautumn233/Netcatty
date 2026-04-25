@@ -85,6 +85,20 @@ test("readLocalX11AuthCookie selects the cookie for the requested display", () =
   assert.equal(cookie.toString("hex"), cookie0);
 });
 
+test("readLocalX11AuthCookie matches explicit unix socket display paths", () => {
+  const cookie0 = "00000000000000000000000000000000";
+  const cookie1 = "11111111111111111111111111111111";
+  const cookie = readLocalX11AuthCookie({
+    display: "/tmp/.X11-unix/X1",
+    readXauthOutput: () => [
+      `host/unix:0  MIT-MAGIC-COOKIE-1  ${cookie0}`,
+      `host/unix:1  MIT-MAGIC-COOKIE-1  ${cookie1}`,
+    ].join("\n"),
+  });
+
+  assert.equal(cookie.toString("hex"), cookie1);
+});
+
 test("attachX11Forwarding reuses a session-level local X11 cookie", async () => {
   const conn = new EventEmitter();
   const localSockets = [];

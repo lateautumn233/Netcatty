@@ -174,7 +174,7 @@ function resolveXauthCommand(platform) {
 function getDisplayNumber(display) {
   const value = String(display || process.env.DISPLAY || ":0").trim() || ":0";
   const normalized = value === ":" ? ":0" : value;
-  const match = normalized.match(/:(\d+)(?:\.\d+)?$/);
+  const match = normalized.match(/:(\d+)(?:\.\d+)?$/) || normalized.match(/\/X(\d+)$/);
   if (!match) return null;
 
   const displayNumber = Number.parseInt(match[1], 10);
