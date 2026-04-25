@@ -32,6 +32,10 @@ function resolveX11DisplaySpec(spec, options = {}) {
   const display = Number.parseInt(match[2], 10);
   const port = display >= 100 ? display : X11_PORT_BASE + display;
 
+  if (host.toLowerCase() === "unix" && platform !== "win32") {
+    return { path: `/tmp/.X11-unix/X${display}` };
+  }
+
   if (!host) {
     if (platform === "win32") {
       return { host: "localhost", port };

@@ -27,3 +27,9 @@ test("serializeHostsToSshConfig omits ForwardX11 when X11 forwarding is disabled
 
   assert.doesNotMatch(config, /ForwardX11/);
 });
+
+test("serializeHostsToSshConfig omits ForwardX11 for mosh hosts", () => {
+  const config = serializeHostsToSshConfig([makeHost({ moshEnabled: true, x11Forwarding: true })]);
+
+  assert.doesNotMatch(config, /ForwardX11/);
+});

@@ -113,7 +113,7 @@ export const serializeHostsToSshConfig = (hosts: Host[], allHosts?: Host[]): str
       lines.push(`    Port ${host.port}`);
     }
 
-    if (host.x11Forwarding) {
+    if (host.x11Forwarding && !host.moshEnabled) {
       lines.push("    ForwardX11 yes");
     }
 

@@ -408,6 +408,10 @@ const HostDetailsPanel: React.FC<HostDetailsPanelProps> = ({
     } else if (preserveLegacyFontSize && cleaned.fontSize == null) {
       cleaned.fontSize = initialData?.fontSize;
     }
+
+    if ((cleaned.protocol && cleaned.protocol !== "ssh") || cleaned.moshEnabled) {
+      delete cleaned.x11Forwarding;
+    }
     onSave(cleaned);
   };
 
@@ -1551,11 +1555,15 @@ const HostDetailsPanel: React.FC<HostDetailsPanelProps> = ({
             enabled={!!form.moshEnabled}
             onToggle={() => {
               const enabling = !form.moshEnabled;
-              if (enabling && form.deviceType === 'network') {
-                // Network device mode is incompatible with Mosh — clear it
-                setForm(prev => ({ ...prev, moshEnabled: true, deviceType: undefined }));
+              if (enabling) {
+                setForm(prev => ({
+                  ...prev,
+                  moshEnabled: true,
+                  deviceType: prev.deviceType === 'network' ? undefined : prev.deviceType,
+                  x11Forwarding: undefined,
+                }));
               } else {
-                update("moshEnabled", enabling);
+                update("moshEnabled", false);
               }
             }}
           />
@@ -1591,7 +1599,7 @@ const HostDetailsPanel: React.FC<HostDetailsPanelProps> = ({
         </Card>
 
         {/* X11 Forwarding */}
-        {(!form.protocol || form.protocol === "ssh") && (
+        {(!form.protocol || form.protocol === "ssh") && !form.moshEnabled && (
           <Card className="p-3 space-y-2 bg-card border-border/80">
             <div className="flex items-center gap-2">
               <TerminalSquare size={14} className="text-muted-foreground" />

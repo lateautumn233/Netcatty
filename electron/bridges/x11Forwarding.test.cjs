@@ -57,6 +57,13 @@ test("resolveX11DisplaySpec accepts explicit unix socket paths", () => {
   );
 });
 
+test("resolveX11DisplaySpec maps unix-prefixed displays to local X11 sockets", () => {
+  assert.deepEqual(
+    resolveX11DisplaySpec("unix:1", { platform: "linux" }),
+    { path: "/tmp/.X11-unix/X1" },
+  );
+});
+
 test("rewriteX11AuthSetupPacket replaces the SSH fake cookie with the local X11 cookie", () => {
   const fakeCookie = "11111111111111111111111111111111";
   const realCookie = "22222222222222222222222222222222";
