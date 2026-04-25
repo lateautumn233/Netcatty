@@ -1590,6 +1590,24 @@ const HostDetailsPanel: React.FC<HostDetailsPanelProps> = ({
           )}
         </Card>
 
+        {/* X11 Forwarding */}
+        {(!form.protocol || form.protocol === "ssh") && (
+          <Card className="p-3 space-y-2 bg-card border-border/80">
+            <div className="flex items-center gap-2">
+              <TerminalSquare size={14} className="text-muted-foreground" />
+              <p className="text-xs font-semibold">{t("hostDetails.section.x11Forwarding")}</p>
+            </div>
+            <ToggleRow
+              label={t("hostDetails.x11Forwarding")}
+              enabled={!!form.x11Forwarding}
+              onToggle={() => update("x11Forwarding", !form.x11Forwarding)}
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("hostDetails.x11Forwarding.desc")}
+            </p>
+          </Card>
+        )}
+
         {/* Network Device Mode — only for SSH hosts without Mosh (serial already uses raw mode) */}
         {(!form.protocol || form.protocol === 'ssh') && !form.moshEnabled && (
         <Card className="p-3 space-y-2 bg-card border-border/80">
