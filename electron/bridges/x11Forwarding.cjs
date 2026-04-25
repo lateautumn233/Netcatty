@@ -171,25 +171,54 @@ function resolveXauthCommand(platform) {
   return "xauth";
 }
 
+function getDisplayNumber(display) {
+  const value = String(display || process.env.DISPLAY || ":0").trim() || ":0";
+  const normalized = value === ":" ? ":0" : value;
+  const match = normalized.match(/:(\d+)(?:\.\d+)?$/);
+  if (!match) return null;
+
+  const displayNumber = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(displayNumber)) return null;
+  return displayNumber >= X11_PORT_BASE ? displayNumber - X11_PORT_BASE : displayNumber;
+}
+
+function parseXauthCookie(output, display) {
+  const requestedDisplay = getDisplayNumber(display);
+  const cookiePattern = new RegExp(`\\b${MIT_MAGIC_COOKIE_PROTOCOL}\\b\\s+([0-9a-fA-F]+)`);
+
+  for (const entry of String(output || "").split(/\r?\n/)) {
+    const match = entry.match(cookiePattern);
+    if (!match) continue;
+
+    const target = entry.trim().split(/\s+/, 1)[0];
+    if (requestedDisplay !== null && getDisplayNumber(target) !== requestedDisplay) {
+      continue;
+    }
+
+    return Buffer.from(match[1], "hex");
+  }
+
+  return null;
+}
+
 function readLocalX11AuthCookie(options = {}) {
   const platform = options.platform || process.platform;
   const command = options.xauthCommand || resolveXauthCommand(platform);
   const display = String(options.display || process.env.DISPLAY || ":0").trim() || ":0";
   try {
-    const output = execFileSync(command, ["list"], {
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        DISPLAY: display === ":" ? ":0" : display,
-      },
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 2000,
-    });
-    const line = output
-      .split(/\r?\n/)
-      .find((entry) => new RegExp(`\\b${MIT_MAGIC_COOKIE_PROTOCOL}\\b\\s+[0-9a-fA-F]+`).test(entry));
-    const match = line?.match(new RegExp(`\\b${MIT_MAGIC_COOKIE_PROTOCOL}\\b\\s+([0-9a-fA-F]+)`));
-    return match ? Buffer.from(match[1], "hex") : null;
+    const normalizedDisplay = display === ":" ? ":0" : display;
+    const output = typeof options.readXauthOutput === "function"
+      ? options.readXauthOutput({ command, display: normalizedDisplay })
+      : execFileSync(command, ["list"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DISPLAY: normalizedDisplay,
+        },
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 2000,
+      });
+    return parseXauthCookie(output, normalizedDisplay);
   } catch {
     return null;
   }
@@ -202,6 +231,19 @@ function attachX11Forwarding(conn, options = {}) {
   const platform = options.platform || process.platform;
   const display = options.display;
   const fakeCookie = options.fakeCookie;
+  const fixedLocalAuthCookie = normalizeCookieBuffer(options.localAuthCookie);
+  let localAuthCookie = fixedLocalAuthCookie;
+  let localAuthCookieResolved = Boolean(fixedLocalAuthCookie);
+
+  const resolveLocalAuthCookie = () => {
+    if (localAuthCookieResolved) return localAuthCookie;
+    localAuthCookieResolved = true;
+    const cookie = typeof options.readLocalAuthCookie === "function"
+      ? options.readLocalAuthCookie({ display, platform })
+      : readLocalX11AuthCookie({ display, platform });
+    localAuthCookie = normalizeCookieBuffer(cookie);
+    return localAuthCookie;
+  };
 
   const onX11 = (info, accept, reject) => {
     const target = resolveX11DisplaySpec(display, { platform });
@@ -229,7 +271,7 @@ function attachX11Forwarding(conn, options = {}) {
       localSocket.on("error", () => cleanup());
       acceptedChannel.on("close", () => destroyStream(localSocket));
       localSocket.on("close", () => destroyStream(acceptedChannel));
-      const realCookie = options.localAuthCookie || readLocalX11AuthCookie({ display, platform });
+      const realCookie = resolveLocalAuthCookie();
       if (realCookie && fakeCookie) {
         acceptedChannel
           .pipe(createX11AuthTransform({ fakeCookie, realCookie }))

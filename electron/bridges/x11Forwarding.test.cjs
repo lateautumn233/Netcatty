@@ -5,6 +5,7 @@ const { EventEmitter } = require("node:events");
 
 const {
   attachX11Forwarding,
+  readLocalX11AuthCookie,
   rewriteX11AuthSetupPacket,
   resolveX11DisplaySpec,
 } = require("./x11Forwarding.cjs");
@@ -68,6 +69,69 @@ test("rewriteX11AuthSetupPacket replaces the SSH fake cookie with the local X11 
   assert.equal(rewritten.rewritten, true);
   assert.match(rewritten.buffer.toString("hex"), new RegExp(realCookie));
   assert.doesNotMatch(rewritten.buffer.toString("hex"), new RegExp(fakeCookie));
+});
+
+test("readLocalX11AuthCookie selects the cookie for the requested display", () => {
+  const cookie0 = "00000000000000000000000000000000";
+  const cookie10 = "10101010101010101010101010101010";
+  const cookie = readLocalX11AuthCookie({
+    display: ":0",
+    readXauthOutput: () => [
+      `host/unix:10  MIT-MAGIC-COOKIE-1  ${cookie10}`,
+      `host/unix:0  MIT-MAGIC-COOKIE-1  ${cookie0}`,
+    ].join("\n"),
+  });
+
+  assert.equal(cookie.toString("hex"), cookie0);
+});
+
+test("attachX11Forwarding reuses a session-level local X11 cookie", async () => {
+  const conn = new EventEmitter();
+  const localSockets = [];
+  const acceptedChannels = [];
+  const cookieReads = [];
+
+  const makeDuplex = () => new Duplex({
+    read() {},
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  });
+
+  attachX11Forwarding(conn, {
+    display: ":0",
+    fakeCookie: "11111111111111111111111111111111",
+    readLocalAuthCookie: () => {
+      cookieReads.push(Date.now());
+      return Buffer.from("22222222222222222222222222222222", "hex");
+    },
+    createSocket: () => {
+      const socket = makeDuplex();
+      socket.connect = () => {
+        queueMicrotask(() => socket.emit("connect"));
+        return socket;
+      };
+      localSockets.push(socket);
+      return socket;
+    },
+    sendMessage: () => {},
+    platform: "linux",
+  });
+
+  for (let i = 0; i < 2; i++) {
+    conn.emit("x11", { srcIP: "127.0.0.1", srcPort: 1234 + i }, () => {
+      const channel = makeDuplex();
+      acceptedChannels.push(channel);
+      return channel;
+    }, () => {
+      throw new Error("unexpected reject");
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(localSockets.length, 2);
+  assert.equal(acceptedChannels.length, 2);
+  assert.equal(cookieReads.length, 1);
 });
 
 test("attachX11Forwarding pipes accepted X11 channels to the local display socket", async () => {
