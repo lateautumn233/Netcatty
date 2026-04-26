@@ -1225,9 +1225,16 @@ if (!gotLock) {
     }
 
     const { ipcMain: _ipcMain } = electronModule;
-    const win = BrowserWindow.getAllWindows()[0];
-    // No window — nothing to check; commit to quit directly.
-    if (!win || win.isDestroyed?.()) {
+    // Target the main window explicitly. Falling back to
+    // BrowserWindow.getAllWindows()[0] could pick the tray panel or settings
+    // window, whose renderers don't listen for app:query-dirty-editors and
+    // would force the 5s timeout fallback to run on every quit.
+    const win = getWindowManager().getMainWindow();
+    // No main window, or it's hidden (tray-panel "Quit" path) — there's no
+    // visible UI to surface a "save first" toast on, so skip the round-trip
+    // and quit directly. The renderer's dirty-editor check exists to warn the
+    // user; if they can't see the warning, it's just dead 5-second wait.
+    if (!win || win.isDestroyed?.() || !win.isVisible?.()) {
       commitQuit();
       return;
     }
