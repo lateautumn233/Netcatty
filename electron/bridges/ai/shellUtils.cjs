@@ -123,6 +123,25 @@ function shouldUseShellForCommand(command) {
   return normalized.endsWith(".cmd") || normalized.endsWith(".bat");
 }
 
+/**
+ * When spawn() runs with `shell: true` on Windows, Node assembles
+ * `cmd.exe /d /s /c "<command> <args>"` but does NOT quote the command
+ * itself. A path like `D:\Program Files\foo\codex.cmd` then gets parsed by
+ * CMD as `D:\Program` + arg `Files\foo\codex.cmd`, producing the localized
+ * "'D:\Program' is not recognized" error. Wrap the command in double quotes
+ * so CMD treats the whole path as one token.
+ *
+ * Only needed when shell mode is on (i.e. .cmd / .bat). Direct spawn of
+ * .exe goes through CreateProcess and handles spaces fine without this.
+ */
+function quoteCommandForShell(command, useShell) {
+  if (!useShell) return command;
+  const value = String(command || "");
+  if (!/\s/.test(value)) return value;
+  if (value.startsWith('"') && value.endsWith('"')) return value;
+  return `"${value}"`;
+}
+
 function resolveCliFromPath(command, shellEnv) {
   // Validate command: only allow valid binary names (alphanumeric, hyphens, underscores, dots)
   if (!command || !/^[a-zA-Z0-9._-]+$/.test(command)) {
@@ -324,6 +343,7 @@ module.exports = {
   extractFirstNonLocalhostUrl,
   normalizeCliPathForPlatform,
   shouldUseShellForCommand,
+  quoteCommandForShell,
   resolveCliFromPath,
   resolveClaudeAcpBinaryPath,
   toUnpackedAsarPath,
