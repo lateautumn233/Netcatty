@@ -1234,7 +1234,15 @@ if (!gotLock) {
     // visible UI to surface a "save first" toast on, so skip the round-trip
     // and quit directly. The renderer's dirty-editor check exists to warn the
     // user; if they can't see the warning, it's just dead 5-second wait.
-    if (!win || win.isDestroyed?.() || !win.isVisible?.()) {
+    //
+    // A minimized window is *not* hidden: the user has a taskbar/Dock entry
+    // and can restore in one click, so we still want to gate the quit on the
+    // dirty-editor check there. Some platforms report isVisible()=false on a
+    // minimized window (see globalShortcutBridge.cjs:478), so check both.
+    const isReachableByUser =
+      win && !win.isDestroyed?.() &&
+      (win.isVisible?.() || win.isMinimized?.());
+    if (!isReachableByUser) {
       commitQuit();
       return;
     }
