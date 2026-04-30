@@ -35,6 +35,10 @@ const PREFERRED_KEY_NAMES = ["id_ed25519", "id_ecdsa", "id_rsa"];
 // Match any private key file: id_* but not *.pub
 const SSH_KEY_PATTERN = /^id_[\w-]+$/;
 
+function quoteShellArg(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 /**
  * Quick check if file content looks like an SSH private key.
  * Rejects non-key files that happen to match the id_* filename pattern.
@@ -1991,39 +1995,55 @@ async function getSessionPwd(event, payload) {
     }, 5000);
 
     // POSIX sh script that:
-    //   1. Walks down the process tree from sshd ($PPID), picking the
-    //      deepest shell (bash/zsh/fish/ksh/dash/sh). Covers both fish
-    //      as the login shell and bash->fish as a child process.
-    //   2. Reads /proc/<pid>/cwd via readlink.
-    //   3. Falls back to $HOME if anything fails.
+    //   1. Finds the sibling interactive shell under sshd ($PPID).
+    //   2. Follows foreground child shells only, which covers bash->fish
+    //      without mistaking background shell scripts for the active shell.
+    //   3. Reads /proc/<pid>/cwd via readlink.
+    //   4. Falls back to the user's home directory if anything fails.
     //
-    // CRITICAL — how this is invoked:
-    //   `exec sh -c 'eval "$(...)"'`
-    // `exec` makes sh *replace* the user's login shell (fish/bash/...)
-    // so the sh process keeps the same PID and $PPID = sshd. `eval`
-    // then runs the decoded script in that same sh — piping it into
-    // another `| sh` would put the script in a grandchild whose $PPID
-    // is the mid-pipeline subshell, not sshd, and the sibling lookup
-    // below would never find the interactive shell. We try GNU
-    // `base64 -d` first and fall back to BSD/macOS `base64 -D`.
-    const posixScript = `PARENT=$PPID
-SELF=$$
+    // `exec` makes sh replace the user's login shell (fish/bash/...)
+    // so sh keeps the same PID and $PPID = sshd. Starting another shell
+    // without exec would make $PPID point at the intermediate shell instead.
+    const posixScript = `SELF=$$
 find_child_shell() {
-  ps -e -o pid=,ppid=,comm= 2>/dev/null | awk -v pp="$1" -v self="$SELF" '$1!=self && $2==pp && $3~/^(ba|z|fi|k|da)?sh$/{print $1; exit}'
+  mode=$2
+  ps -e -o pid=,ppid=,stat=,comm= 2>/dev/null | awk -v pp="$1" -v self="$SELF" -v mode="$mode" '
+    $1 != self && $2 == pp && $4 ~ /^(ba|z|fi|k|da)?sh$/ {
+      if (index($3, "+") > 0) { print $1; found=1; exit }
+      if (mode != "foreground" && pid == "") pid=$1
+    }
+    END { if (!found && mode != "foreground" && pid != "") print pid }
+  '
 }
-cand=$(find_child_shell "$PARENT")
-pid="$cand"
-while [ -n "$cand" ]; do
-  cand=$(find_child_shell "$cand")
-  [ -n "$cand" ] && pid="$cand"
+pid=$(find_child_shell "$PPID" any)
+while [ -n "$pid" ]; do
+  child=$(find_child_shell "$pid" foreground)
+  [ -n "$child" ] || break
+  pid="$child"
 done
 if [ -n "$pid" ]; then
   cwd=$(readlink /proc/$pid/cwd 2>/dev/null)
   [ -n "$cwd" ] && printf '%s\\n' "$cwd" && exit 0
 fi
-printf '%s\\n' "$HOME"`;
-    const encoded = Buffer.from(posixScript, 'utf8').toString('base64');
-    const cmd = `exec sh -c 'eval "$(echo ${encoded} | (base64 -d 2>/dev/null || base64 -D 2>/dev/null))"'`;
+emit_home() {
+  case "$1" in
+    /*) printf '%s\\n' "$1"; exit 0 ;;
+  esac
+}
+home=$(eval echo "~" 2>/dev/null)
+emit_home "$home"
+uid=$(id -u 2>/dev/null)
+if [ -n "$uid" ]; then
+  home=$(getent passwd "$uid" 2>/dev/null | awk -F: 'NR == 1 { print $6; exit }')
+  emit_home "$home"
+  home=$(awk -F: -v uid="$uid" '$3 == uid { print $6; exit }' /etc/passwd 2>/dev/null)
+  emit_home "$home"
+fi
+home=$(id -P 2>/dev/null | awk -F: 'NR == 1 { print $9; exit }')
+emit_home "$home"
+emit_home "$HOME"
+exit 1`;
+    const cmd = `exec sh -c ${quoteShellArg(posixScript)}`;
 
     session.conn.exec(cmd, (err, stream) => {
       if (err) {
