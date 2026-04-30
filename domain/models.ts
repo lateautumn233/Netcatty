@@ -78,6 +78,7 @@ export interface Host {
   savePassword?: boolean; // Whether to save the password (default: true)
   authMethod?: 'password' | 'key' | 'certificate';
   agentForwarding?: boolean;
+  x11Forwarding?: boolean;
   createdAt?: number; // Timestamp when host was created
   startupCommand?: string;
   hostChaining?: string; // Deprecated: use hostChain instead
@@ -490,6 +491,13 @@ export interface TerminalSettings {
 
   // SSH Connection
   keepaliveInterval: number; // Seconds between SSH-level keepalive packets (0 = disabled)
+  x11Display: string; // Optional local X11 DISPLAY override (empty = use system DISPLAY/default)
+
+  // Mosh Connection
+  // Absolute path to the local `mosh` client binary. Empty triggers
+  // auto-discovery (PATH + Homebrew/MacPorts/nix fallbacks). When set,
+  // the value is used as-is and a missing file produces a clear error.
+  moshClientPath: string;
 
   // Server Stats Display (Linux only)
   showServerStats: boolean; // Show CPU/Memory/Disk in terminal statusbar
@@ -635,6 +643,8 @@ const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   localShell: '', // Empty = use system default
   localStartDir: '', // Empty = use home directory
   keepaliveInterval: 0, // 0 = disabled (use SSH library defaults)
+  x11Display: '', // Empty = use DISPLAY/default local X server
+  moshClientPath: '', // Empty = auto-detect mosh on PATH / common install dirs
   showServerStats: true, // Show server stats by default
   serverStatsRefreshInterval: 5, // Refresh every 5 seconds
   disableBracketedPaste: false, // Bracketed paste enabled by default
@@ -771,6 +781,7 @@ export type TransferDirection = 'upload' | 'download' | 'remote-to-remote' | 'lo
 
 export interface TransferTask {
   id: string;
+  batchId?: string;
   fileName: string;
   originalFileName?: string;
   sourcePath: string;
@@ -795,14 +806,21 @@ export interface TransferTask {
   parentTaskId?: string;
   sourceLastModified?: number; // Cached from file list to avoid redundant stat
   skipConflictCheck?: boolean; // Skip conflict check for replace operations
+  replaceExistingTarget?: boolean; // Delete the existing target before transferring
   retryable?: boolean; // False for task types that cannot be safely replayed through generic retry
 }
 
+export type FileConflictAction = 'stop' | 'skip' | 'replace' | 'duplicate' | 'merge';
+
 export interface FileConflict {
   transferId: string;
+  batchId?: string;
   fileName: string;
   sourcePath: string;
   targetPath: string;
+  isDirectory: boolean;
+  existingType?: 'file' | 'directory' | 'symlink';
+  applyToAllCount?: number;
   existingSize: number;
   newSize: number;
   existingModified: number;

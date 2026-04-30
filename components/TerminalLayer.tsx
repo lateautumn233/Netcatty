@@ -24,6 +24,7 @@ import {
   resolveHostTerminalFontSize,
   resolveHostTerminalFontWeight,
   resolveHostTerminalThemeId,
+  applyCustomAccentToTerminalTheme,
 } from '../domain/terminalAppearance';
 import { cn, normalizeLineEndings } from '../lib/utils';
 import { detectLocalOs } from '../lib/localShell';
@@ -43,6 +44,7 @@ import Terminal from './Terminal';
 import { SftpSidePanel } from './SftpSidePanel';
 import { ScriptsSidePanel } from './ScriptsSidePanel';
 import { ThemeSidePanel } from './terminal/ThemeSidePanel';
+import { focusTerminalSessionInput } from './terminal/focusTerminalSession';
 import { AIChatSidePanel } from './AIChatSidePanel';
 import { useAIState } from '../application/state/useAIState';
 import { TerminalComposeBar } from './terminal/TerminalComposeBar';
@@ -53,6 +55,7 @@ import { Input } from './ui/input';
 import { RippleButton } from './ui/ripple';
 import { ScrollArea } from './ui/scroll-area';
 import { setupMcpApprovalBridge } from '../infrastructure/ai/shared/approvalGate';
+import { resolveScriptsSidePanelShortcutIntent } from '../application/state/resolveSnippetsShortcutIntent';
 
 type SidePanelTab = 'sftp' | 'scripts' | 'theme' | 'ai';
 
@@ -393,6 +396,8 @@ interface TerminalLayerProps {
   draggingSessionId: string | null;
   terminalTheme: TerminalTheme;
   followAppTerminalTheme?: boolean;
+  accentMode?: 'theme' | 'custom';
+  customAccent?: string;
   terminalSettings?: TerminalSettings;
   terminalFontFamilyId: string;
   fontSize?: number;
@@ -436,6 +441,7 @@ interface TerminalLayerProps {
   sessionLogsDir?: string;
   sessionLogsFormat?: string;
   closeSidePanelRef?: React.MutableRefObject<(() => void) | null>;
+  toggleScriptsSidePanelRef?: React.MutableRefObject<(() => void) | null>;
   activeSidePanelTabRef?: React.MutableRefObject<string | null>;
 }
 
@@ -452,6 +458,8 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
   draggingSessionId,
   terminalTheme,
   followAppTerminalTheme = false,
+  accentMode = 'theme',
+  customAccent = '',
   terminalSettings,
   terminalFontFamilyId,
   fontSize = 14,
@@ -492,6 +500,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
   sessionLogsDir,
   sessionLogsFormat,
   closeSidePanelRef,
+  toggleScriptsSidePanelRef,
   activeSidePanelTabRef,
 }) => {
   // Subscribe to activeTabId from external store
@@ -785,6 +794,18 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     setSftpPendingUploadsForTab(prev => {
       const current = prev.get(tabId);
       if (!current || current.requestId !== requestId) {
+        return prev;
+      }
+      const next = new Map(prev);
+      next.delete(tabId);
+      return next;
+    });
+  }, []);
+
+  const handleSftpInitialLocationApplied = useCallback((tabId: string, location: { hostId: string; path: string }) => {
+    setSftpInitialLocationForTab(prev => {
+      const current = prev.get(tabId);
+      if (!current || current.hostId !== location.hostId || current.path !== location.path) {
         return prev;
       }
       const next = new Map(prev);
@@ -1294,9 +1315,26 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     [sidePanelOpenTabs],
   );
 
+  const getActiveTerminalSessionId = useCallback((): string | null => {
+    if (!activeWorkspace) return activeSession?.id ?? null;
+
+    const workspaceSessionIdSet = new Set(collectSessionIds(activeWorkspace.root));
+    const focusedSessionId = activeWorkspace.focusedSessionId;
+    if (focusedSessionId && workspaceSessionIdSet.has(focusedSessionId) && sessions.some((session) => session.id === focusedSessionId)) {
+      return focusedSessionId;
+    }
+
+    return sessions.find((session) => workspaceSessionIdSet.has(session.id))?.id ?? null;
+  }, [activeWorkspace, activeSession?.id, sessions]);
+
+  const syncWorkspaceFocusIfNeeded = useCallback((sessionId: string | null) => {
+    if (!activeWorkspace || !sessionId || activeWorkspace.focusedSessionId === sessionId) return;
+    onSetWorkspaceFocusedSession?.(activeWorkspace.id, sessionId);
+  }, [activeWorkspace, onSetWorkspaceFocusedSession]);
+
   // Get the focused terminal's current working directory
   const getTerminalCwd = useCallback(async (): Promise<string | null> => {
-    const sessionId = activeWorkspace?.focusedSessionId ?? activeSession?.id;
+    const sessionId = getActiveTerminalSessionId();
     if (!sessionId) return null;
     try {
       const result = await terminalBackend.getSessionPwd(sessionId);
@@ -1304,27 +1342,23 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     } catch {
       return null;
     }
-  }, [activeWorkspace?.focusedSessionId, activeSession?.id, terminalBackend]);
+  }, [getActiveTerminalSessionId, terminalBackend]);
 
   const refocusTerminalSession = useCallback((sessionId?: string | null) => {
-    if (!sessionId) return;
-
-    const focusTarget = () => {
-      const pane = document.querySelector(`[data-session-id="${sessionId}"]`);
-      const textarea = pane?.querySelector('textarea.xterm-helper-textarea') as HTMLTextAreaElement | null;
-      textarea?.focus();
-    };
-
-    requestAnimationFrame(() => {
-      focusTarget();
-      setTimeout(focusTarget, 50);
-    });
+    focusTerminalSessionInput(sessionId);
   }, []);
+
+  const refocusActiveTerminalSession = useCallback(() => {
+    const sessionId = getActiveTerminalSessionId();
+    syncWorkspaceFocusIfNeeded(sessionId);
+    refocusTerminalSession(sessionId);
+  }, [getActiveTerminalSessionId, refocusTerminalSession, syncWorkspaceFocusIfNeeded]);
 
   // Close the entire side panel for the current tab
   const handleCloseSidePanel = useCallback(() => {
     if (!activeTabId) return;
-    const sessionIdToRefocus = activeWorkspace?.focusedSessionId ?? activeSession?.id;
+    const sessionIdToRefocus = getActiveTerminalSessionId();
+    syncWorkspaceFocusIfNeeded(sessionIdToRefocus);
     setSidePanelOpenTabs(prev => {
       const next = new Map(prev);
       next.delete(activeTabId);
@@ -1348,7 +1382,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
       return next;
     });
     refocusTerminalSession(sessionIdToRefocus);
-  }, [activeTabId, activeWorkspace?.focusedSessionId, activeSession?.id, refocusTerminalSession]);
+  }, [activeTabId, getActiveTerminalSessionId, refocusTerminalSession, syncWorkspaceFocusIfNeeded]);
 
   useEffect(() => {
     if (!closeSidePanelRef) return;
@@ -1402,6 +1436,34 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
   const handleOpenScripts = useCallback(() => {
     handleSwitchSidePanelTab('scripts');
   }, [handleSwitchSidePanelTab]);
+
+  const handleToggleScriptsSidePanel = useCallback(() => {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+
+    const intent = resolveScriptsSidePanelShortcutIntent(
+      sidePanelOpenTabsRef.current.get(tabId) ?? null,
+    );
+
+    if (intent.kind === 'closeTerminalSidePanel') {
+      handleCloseSidePanel();
+      return;
+    }
+
+    setSidePanelOpenTabs(prev => {
+      const next = new Map(prev);
+      next.set(tabId, 'scripts');
+      return next;
+    });
+  }, [handleCloseSidePanel]);
+
+  useEffect(() => {
+    if (!toggleScriptsSidePanelRef) return;
+    toggleScriptsSidePanelRef.current = handleToggleScriptsSidePanel;
+    return () => {
+      toggleScriptsSidePanelRef.current = null;
+    };
+  }, [toggleScriptsSidePanelRef, handleToggleScriptsSidePanel]);
 
   // Open theme side panel (called from Terminal toolbar)
   const handleOpenTheme = useCallback(() => {
@@ -1523,35 +1585,37 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
       return;
     }
     const pane = document.querySelector<HTMLElement>(`[data-session-id="${sessionId}"]`);
-    const theme = TERMINAL_THEMES.find((entry) => entry.id === themeId)
+    const baseTheme = TERMINAL_THEMES.find((entry) => entry.id === themeId)
       || customThemes.find((entry) => entry.id === themeId);
-    if (!pane || !theme) {
+    if (!pane || !baseTheme) {
       clearTerminalPreviewVars(sessionId);
       return;
     }
+    const theme = applyCustomAccentToTerminalTheme(baseTheme, accentMode, customAccent);
 
     pane.style.setProperty('--terminal-preview-bg', theme.colors.background);
     pane.style.setProperty('--terminal-preview-fg', theme.colors.foreground);
     pane.style.setProperty('--terminal-preview-border', `color-mix(in srgb, ${theme.colors.foreground} 8%, ${theme.colors.background} 92%)`);
     pane.style.setProperty('--terminal-preview-toolbar-btn', `color-mix(in srgb, ${theme.colors.background} 88%, ${theme.colors.foreground} 12%)`);
     pane.style.setProperty('--terminal-preview-toolbar-btn-hover', `color-mix(in srgb, ${theme.colors.background} 78%, ${theme.colors.foreground} 22%)`);
-    pane.style.setProperty('--terminal-preview-toolbar-btn-active', `color-mix(in srgb, ${theme.colors.background} 68%, ${theme.colors.foreground} 32%)`);
-  }, [customThemes]);
+    pane.style.setProperty('--terminal-preview-toolbar-btn-active', `color-mix(in srgb, ${theme.colors.cursor} 78%, ${theme.colors.background} 22%)`);
+  }, [accentMode, customAccent, customThemes]);
   const applyTopTabsPreviewVars = useCallback((themeId: string | null) => {
     if (!themeId || typeof document === 'undefined') {
       clearTopTabsPreviewVars();
       return;
     }
     const tabsRoot = document.querySelector<HTMLElement>('[data-top-tabs-root]');
-    const theme = TERMINAL_THEMES.find((entry) => entry.id === themeId)
+    const baseTheme = TERMINAL_THEMES.find((entry) => entry.id === themeId)
       || customThemes.find((entry) => entry.id === themeId);
-    if (!tabsRoot || !theme) {
+    if (!tabsRoot || !baseTheme) {
       clearTopTabsPreviewVars();
       return;
     }
+    const theme = applyCustomAccentToTerminalTheme(baseTheme, accentMode, customAccent);
     const bg = hexToHslToken(theme.colors.background);
     const fg = hexToHslToken(theme.colors.foreground);
-    const accent = fg;
+    const accent = hexToHslToken(theme.colors.cursor);
     const isDark = theme.type === 'dark';
     const secondary = adjustLightnessToken(bg, isDark ? 6 : -5);
     const border = adjustLightnessToken(bg, isDark ? 12 : -10);
@@ -1568,8 +1632,8 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
     tabsRoot.style.setProperty('--top-tabs-fg', 'hsl(var(--foreground))');
     tabsRoot.style.setProperty('--top-tabs-muted', 'hsl(var(--muted-foreground))');
     tabsRoot.style.setProperty('--top-tabs-active-bg', 'hsl(var(--background))');
-    tabsRoot.style.setProperty('--top-tabs-accent', 'hsl(var(--foreground))');
-  }, [customThemes]);
+    tabsRoot.style.setProperty('--top-tabs-accent', 'hsl(var(--accent))');
+  }, [accentMode, customAccent, customThemes]);
 
   useEffect(() => {
     return () => {
@@ -1832,10 +1896,11 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
 
   const resolvedPreviewTheme = useMemo(() => {
     const themeId = previewedOrVisibleThemeId;
-    return TERMINAL_THEMES.find((theme) => theme.id === themeId)
+    const baseTheme = TERMINAL_THEMES.find((theme) => theme.id === themeId)
       || customThemes.find((theme) => theme.id === themeId)
       || terminalTheme;
-  }, [customThemes, previewedOrVisibleThemeId, terminalTheme]);
+    return applyCustomAccentToTerminalTheme(baseTheme, accentMode, customAccent);
+  }, [accentMode, customAccent, customThemes, previewedOrVisibleThemeId, terminalTheme]);
   const sessionLogConfig = useMemo(
     () =>
       sessionLogsEnabled && sessionLogsDir
@@ -2144,6 +2209,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                 style={{
                     ['--terminal-sidepanel-bg' as never]: resolvedPreviewTheme.colors.background,
                     ['--terminal-sidepanel-fg' as never]: resolvedPreviewTheme.colors.foreground,
+                    ['--terminal-sidepanel-accent' as never]: resolvedPreviewTheme.colors.cursor,
                     ['--terminal-sidepanel-muted' as never]: `color-mix(in srgb, ${resolvedPreviewTheme.colors.foreground} 62%, ${resolvedPreviewTheme.colors.background} 38%)`,
                     ['--terminal-sidepanel-border' as never]: `color-mix(in srgb, ${resolvedPreviewTheme.colors.foreground} 12%, ${resolvedPreviewTheme.colors.background} 88%)`,
                     backgroundColor: 'var(--terminal-sidepanel-bg)',
@@ -2166,6 +2232,9 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                       data-state={activeSidePanelTab === 'sftp' ? 'active' : 'inactive'}
                       className="netcatty-tab h-7 w-7 rounded-md p-0 hover:bg-transparent"
                       style={{
+                        backgroundColor: activeSidePanelTab === 'sftp'
+                          ? 'color-mix(in srgb, var(--terminal-sidepanel-accent) 24%, transparent)'
+                          : 'transparent',
                         color: activeSidePanelTab === 'sftp'
                           ? 'var(--terminal-sidepanel-fg)'
                           : 'var(--terminal-sidepanel-muted)',
@@ -2183,6 +2252,9 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                       data-state={activeSidePanelTab === 'scripts' ? 'active' : 'inactive'}
                       className="netcatty-tab h-7 w-7 rounded-md p-0 hover:bg-transparent"
                       style={{
+                        backgroundColor: activeSidePanelTab === 'scripts'
+                          ? 'color-mix(in srgb, var(--terminal-sidepanel-accent) 24%, transparent)'
+                          : 'transparent',
                         color: activeSidePanelTab === 'scripts'
                           ? 'var(--terminal-sidepanel-fg)'
                           : 'var(--terminal-sidepanel-muted)',
@@ -2200,6 +2272,9 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                       data-state={activeSidePanelTab === 'theme' ? 'active' : 'inactive'}
                       className="netcatty-tab h-7 w-7 rounded-md p-0 hover:bg-transparent"
                       style={{
+                        backgroundColor: activeSidePanelTab === 'theme'
+                          ? 'color-mix(in srgb, var(--terminal-sidepanel-accent) 24%, transparent)'
+                          : 'transparent',
                         color: activeSidePanelTab === 'theme'
                           ? 'var(--terminal-sidepanel-fg)'
                           : 'var(--terminal-sidepanel-muted)',
@@ -2217,6 +2292,9 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                       data-state={activeSidePanelTab === 'ai' ? 'active' : 'inactive'}
                       className="netcatty-tab h-7 w-7 rounded-md p-0 hover:bg-transparent"
                       style={{
+                        backgroundColor: activeSidePanelTab === 'ai'
+                          ? 'color-mix(in srgb, var(--terminal-sidepanel-accent) 24%, transparent)'
+                          : 'transparent',
                         color: activeSidePanelTab === 'ai'
                           ? 'var(--terminal-sidepanel-fg)'
                           : 'var(--terminal-sidepanel-muted)',
@@ -2271,6 +2349,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                               ? (sftpInitialLocationForTab.get(tabId) ?? null)
                               : null
                           }
+                          onInitialLocationApplied={(location) => handleSftpInitialLocationApplied(tabId, location)}
                           showWorkspaceHostHeader={isVisibleSftpPanel && !!activeWorkspace}
                           isVisible={isVisibleSftpPanel}
                           renderOverlays={isVisibleSftpPanel}
@@ -2285,6 +2364,7 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                           editorWordWrap={editorWordWrap}
                           setEditorWordWrap={setEditorWordWrap}
                           onGetTerminalCwd={getTerminalCwd}
+                          onRequestTerminalFocus={refocusActiveTerminalSession}
                         />
                     );
                   })}
@@ -2466,6 +2546,8 @@ const TerminalLayerInner: React.FC<TerminalLayerProps> = ({
                   fontSize={fontSize}
                   terminalTheme={terminalTheme}
                   followAppTerminalTheme={followAppTerminalTheme}
+                  accentMode={accentMode}
+                  customAccent={customAccent}
                   terminalSettings={terminalSettings}
                   sessionId={session.id}
                   startupCommand={session.startupCommand}
@@ -2582,6 +2664,8 @@ const terminalLayerAreEqual = (prev: TerminalLayerProps, next: TerminalLayerProp
     prev.workspaces === next.workspaces &&
     prev.draggingSessionId === next.draggingSessionId &&
     prev.terminalTheme === next.terminalTheme &&
+    prev.accentMode === next.accentMode &&
+    prev.customAccent === next.customAccent &&
     prev.terminalSettings === next.terminalSettings &&
     prev.fontSize === next.fontSize &&
     prev.hotkeyScheme === next.hotkeyScheme &&
@@ -2599,6 +2683,7 @@ const terminalLayerAreEqual = (prev: TerminalLayerProps, next: TerminalLayerProp
     prev.onToggleWorkspaceViewMode === next.onToggleWorkspaceViewMode &&
     prev.onSetWorkspaceFocusedSession === next.onSetWorkspaceFocusedSession &&
     prev.onSplitSession === next.onSplitSession &&
+    prev.toggleScriptsSidePanelRef === next.toggleScriptsSidePanelRef &&
     prev.identities === next.identities
   );
 };

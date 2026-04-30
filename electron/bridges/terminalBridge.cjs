@@ -19,6 +19,7 @@ const { detectShellKind } = require("./ai/ptyExec.cjs");
 const { trackSessionIdlePrompt } = require("./ai/shellUtils.cjs");
 const { createZmodemSentry } = require("./zmodemHelper.cjs");
 const { discoverShells } = require("./shellDiscovery.cjs");
+const moshHandshake = require("./moshHandshake.cjs");
 
 // Shared references
 let sessions = null;
@@ -118,6 +119,102 @@ function createPtyBuffer(sendFn) {
 }
 
 /**
+ * Locate an executable on POSIX systems by name.
+ *
+ * macOS GUI Electron apps inherit launchd's minimal PATH
+ * (`/usr/bin:/bin:/usr/sbin:/sbin`), missing Homebrew and other common
+ * package-manager directories. `pty.spawn(name)` then either fails
+ * synchronously with ENOENT or spawns a child that immediately exits
+ * with no useful error surfaced to the renderer (see issue #842 for the
+ * Mosh case).
+ *
+ * Returns the absolute path on success, or null when the binary cannot
+ * be located anywhere we know to look. Win32 callers should keep using
+ * findExecutable() which handles `where.exe` + Windows-specific paths.
+ */
+const POSIX_EXTRA_PATH_DIRS = [
+  "/opt/homebrew/bin",
+  "/opt/homebrew/sbin",
+  "/usr/local/bin",
+  "/usr/local/sbin",
+  "/opt/local/bin",
+  "/opt/local/sbin",
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin",
+];
+
+function isExecutableFile(candidate) {
+  try {
+    const st = fs.statSync(candidate);
+    if (!st.isFile()) return false;
+    // Windows has no POSIX execute bit — Node returns mode 0o100666 even for
+    // .exe / .bat / .cmd files, so 0o111 is unreliable there. Treat any
+    // regular file as executable on Win32 and let spawn-time PATHEXT /
+    // extension handling reject non-executables.
+    if (process.platform === "win32") return true;
+    return (st.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
+function resolvePosixExecutable(name, opts = {}) {
+  if (process.platform === "win32") return null;
+  if (!name || typeof name !== "string") return null;
+
+  // Already an absolute or relative path: validate as-is.
+  if (name.includes("/")) {
+    return isExecutableFile(name) ? name : null;
+  }
+  if (!/^[a-zA-Z0-9._+-]+$/.test(name)) return null;
+
+  const seen = new Set();
+  const dirs = [];
+
+  // 1. Honor the caller-supplied PATH first so callers that have already
+  //    merged a host-level environmentVariables.PATH override don't see the
+  //    fallback decline a binary that the spawned process would have found.
+  //    Falls back to the main process PATH when no override is provided.
+  const pathOverride = Object.prototype.hasOwnProperty.call(opts, "pathOverride")
+    ? opts.pathOverride
+    : process.env.PATH;
+  for (const dir of (pathOverride || "").split(":")) {
+    if (dir && !seen.has(dir)) {
+      seen.add(dir);
+      dirs.push(dir);
+    }
+  }
+
+  // 2. Add directories the GUI launcher's PATH typically misses on macOS/Linux.
+  for (const dir of POSIX_EXTRA_PATH_DIRS) {
+    if (!seen.has(dir)) {
+      seen.add(dir);
+      dirs.push(dir);
+    }
+  }
+
+  // 3. User-scoped install locations (nix-profile, cargo, ~/.local).
+  const home = process.env.HOME;
+  if (home) {
+    for (const sub of [".nix-profile/bin", ".cargo/bin", ".local/bin"]) {
+      const dir = path.join(home, sub);
+      if (!seen.has(dir)) {
+        seen.add(dir);
+        dirs.push(dir);
+      }
+    }
+  }
+
+  for (const dir of dirs) {
+    const candidate = path.join(dir, name);
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
  * Find executable path on Windows
  */
 function isWindowsAppExecutionAlias(filePath) {
@@ -133,12 +230,17 @@ function isWindowsAppExecutionAlias(filePath) {
   return !!windowsAppsDir && normalizedPath.startsWith(`${windowsAppsDir}${path.sep}`);
 }
 
-function findExecutable(name) {
+function findExecutable(name, opts = {}) {
   if (process.platform !== "win32") return name;
   
   const { execFileSync } = require("child_process");
   try {
-    const result = execFileSync("where.exe", [name], { encoding: "utf8" });
+    const pathOverride = Object.prototype.hasOwnProperty.call(opts, "pathOverride")
+      ? opts.pathOverride
+      : process.env.PATH;
+    const env = { ...process.env, PATH: pathOverride || "" };
+    const whereExe = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "where.exe");
+    const result = execFileSync(fs.existsSync(whereExe) ? whereExe : "where.exe", [name], { encoding: "utf8", env });
     const candidates = result
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -153,7 +255,6 @@ function findExecutable(name) {
     console.warn(`Could not find ${name} via where.exe:`, err.message);
   }
   
-  const path = require("node:path");
   if (!/^[a-zA-Z0-9._-]+$/.test(name)) return name;
 
   const commonPaths = [];
@@ -683,21 +784,401 @@ async function startTelnetSession(event, options) {
 }
 
 /**
- * Start a Mosh session using system mosh-client
+ * Resolve a usable bare `mosh-client` binary (i.e. not the Perl
+ * wrapper) from, in order:
+ *   1. options.moshClientPath when its basename matches `mosh-client[.exe]`
+ *   2. resources/mosh/<…>/ via bundledMoshClient()
+ *   3. PATH lookup for `mosh-client`
+ *
+ * Returns the absolute path or null.
+ */
+function resolveBareMoshClient(options, opts = {}) {
+  const explicit = typeof options.moshClientPath === "string" ? options.moshClientPath.trim() : "";
+  if (explicit) {
+    const expanded = expandHomePath(explicit);
+    if (path.isAbsolute(expanded) && isExecutableFile(expanded)) {
+      const base = path.basename(expanded).toLowerCase();
+      if (base === "mosh-client" || base === "mosh-client.exe") {
+        return path.resolve(expanded);
+      }
+    }
+    return null;
+  }
+
+  const bundled = bundledMoshClient();
+  if (bundled) return bundled;
+
+  if (process.platform === "win32") {
+    const onPath = findExecutable("mosh-client", { pathOverride: opts.pathOverride });
+    if (onPath && onPath !== "mosh-client" && fs.existsSync(onPath)) return onPath;
+  } else {
+    const onPath = resolvePosixExecutable("mosh-client", { pathOverride: opts.pathOverride });
+    if (onPath) return onPath;
+  }
+  return null;
+}
+
+/**
+ * Phase-2 / Phase-3b path: run the SSH bootstrap ourselves *inside the
+ * user's terminal PTY* so password / 2FA / known-hosts prompts render
+ * naturally, then swap to a bare `mosh-client` once `MOSH CONNECT` is
+ * detected. Replaces both the upstream Mosh Perl wrapper and the
+ * earlier non-PTY (BatchMode-style) implementation that couldn't show
+ * prompts.
+ *
+ * State machine:
+ *   ssh-spawn ──onData──▶ sniffer.feed ──visible──▶ renderer
+ *                                  └──parsed──▶ remember port/key
+ *   ssh-pty exits  ─────▶ if parsed: spawn mosh-client + swap
+ *                          else: surface error
+ *
+ * The session keeps a stable sessionId across the swap. session.proc
+ * is updated atomically before any user input arrives at the new
+ * mosh-client (writeToSession / resizeSession route through
+ * session.proc, so they automatically address the right process). The
+ * ZMODEM sentry is recreated for the new proc because its
+ * writeToRemote closure captures the previous handle.
+ *
+ * Caller has already validated that `bareClient` and `sshExe` exist.
+ */
+async function startMoshSessionViaHandshake(event, options, { bareClient, sshExe }) {
+  const sessionId = options.sessionId || randomUUID();
+  const cols = options.cols || 80;
+  const rows = options.rows || 24;
+  const optionsEnv = options.env || {};
+  const lang = optionsEnv.LANG || resolveLangFromCharsetForMosh(options.charset);
+
+  const { args: sshArgs } = moshHandshake.buildSshHandshakeCommand({
+    host: options.hostname,
+    port: options.port,
+    username: options.username,
+    lang,
+    moshServer: moshHandshake.buildMoshServerCommand(options.moshServerPath),
+  });
+
+  const sshEnv = { ...process.env, ...optionsEnv, TERM: "xterm-256color" };
+  if (options.agentForwarding && process.env.SSH_AUTH_SOCK) {
+    sshEnv.SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK;
+  }
+
+  const sshPty = pty.spawn(sshExe, sshArgs, {
+    cols,
+    rows,
+    env: sshEnv,
+    cwd: os.homedir(),
+    encoding: null,
+  });
+
+  const session = {
+    proc: sshPty,
+    pty: sshPty,
+    type: "mosh",
+    protocol: "mosh",
+    webContentsId: event.sender.id,
+    hostname: options.hostname || "",
+    username: options.username || "",
+    label: options.label || options.hostname || "Mosh Session",
+    shellKind: "posix",
+    shellExecutable: "remote-shell",
+    flushPendingData: null,
+    lastIdlePrompt: "",
+    lastIdlePromptAt: 0,
+    _promptTrackTail: "",
+    cols,
+    rows,
+    moshHandshakePhase: "ssh",
+    moshHandshakeResult: null,
+  };
+  sessions.set(sessionId, session);
+
+  if (options.sessionLog?.enabled && options.sessionLog?.directory) {
+    sessionLogStreamManager.startStream(sessionId, {
+      hostLabel: options.label || options.hostname,
+      hostname: options.hostname,
+      directory: options.sessionLog.directory,
+      format: options.sessionLog.format || "txt",
+      startTime: Date.now(),
+    });
+  }
+
+  const { bufferData, flush } = createPtyBuffer((data) => {
+    const contents = electronModule.webContents.fromId(session.webContentsId);
+    contents?.send("netcatty:data", { sessionId, data });
+  });
+  session.flushPendingData = flush;
+
+  const sniffer = moshHandshake.createMoshConnectSniffer();
+
+  // Forward bytes from the ssh PTY to the renderer, redacting the
+  // MOSH CONNECT magic line. ZMODEM is intentionally not enabled
+  // during handshake — it can't appear during ssh login output and
+  // would only complicate the swap.
+  sshPty.onData((chunk) => {
+    const { visible, parsed } = sniffer.feed(chunk);
+    if (visible && (visible.length || (typeof visible === "string" && visible))) {
+      const str = Buffer.isBuffer(visible) ? visible.toString("utf8") : visible;
+      if (str.length > 0) {
+        bufferData(str);
+        sessionLogStreamManager.appendData(sessionId, str);
+      }
+    }
+    if (parsed && session.moshHandshakePhase === "ssh") {
+      session.moshHandshakePhase = "parsed";
+      session.moshHandshakeResult = parsed;
+    }
+  });
+
+  sshPty.onExit(({ exitCode, signal }) => {
+    if (sessions.get(sessionId) !== session || session.closed) {
+      return;
+    }
+
+    if (session.moshHandshakePhase === "parsed" && session.moshHandshakeResult) {
+      try {
+        swapToMoshClient(session, options, {
+          bareClient,
+          optionsEnv,
+          lang,
+          parsed: session.moshHandshakeResult,
+          bufferData,
+          flush,
+          sessionId,
+        });
+      } catch (err) {
+        flush();
+        sessionLogStreamManager.stopStream(sessionId);
+        const contents = electronModule.webContents.fromId(session.webContentsId);
+        contents?.send("netcatty:exit", {
+          sessionId,
+          reason: "error",
+          error: `Failed to spawn mosh-client: ${err.message}`,
+        });
+        sessions.delete(sessionId);
+      }
+      return;
+    }
+
+    // Handshake failed before MOSH CONNECT — ssh exited without parse.
+    // The user has already seen the failure output (auth error, host
+    // key warning, etc). Just surface a session-exit with the code so
+    // the renderer can label the session "disconnected".
+    flush();
+    sessionLogStreamManager.stopStream(sessionId);
+    const contents = electronModule.webContents.fromId(session.webContentsId);
+    contents?.send("netcatty:exit", {
+      sessionId,
+      exitCode,
+      signal,
+      reason: "error",
+    });
+    sessions.delete(sessionId);
+  });
+
+  return { sessionId };
+}
+
+/**
+ * Mid-session PTY swap: replaces session.proc (currently the ssh
+ * handshake PTY) with a freshly-spawned mosh-client PTY, re-wiring
+ * the data / exit listeners and (on POSIX) recreating the ZMODEM
+ * sentry whose writeToRemote closure captured the previous handle.
+ */
+function swapToMoshClient(session, options, ctx) {
+  const { bareClient, optionsEnv, lang, parsed, bufferData, flush, sessionId } = ctx;
+
+  const env = moshHandshake.buildMoshClientEnv({
+    baseEnv: { ...process.env, ...optionsEnv, TERM: "xterm-256color" },
+    key: parsed.key,
+    lang,
+  });
+  if (options.agentForwarding && process.env.SSH_AUTH_SOCK) {
+    env.SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK;
+  }
+
+  const { command, args: clientArgs } = moshHandshake.buildMoshClientCommand({
+    moshClientPath: bareClient,
+    host: parsed.host || options.hostname,
+    port: parsed.port,
+  });
+
+  const mcPty = pty.spawn(command, clientArgs, {
+    cols: session.cols,
+    rows: session.rows,
+    env,
+    cwd: os.homedir(),
+    encoding: null,
+  });
+
+  // Atomic swap — writeToSession / resizeSession both read
+  // session.proc lazily, so any keystroke that arrives after this
+  // assignment goes to mosh-client, not the dead ssh PTY.
+  session.proc = mcPty;
+  session.pty = mcPty;
+  session.moshHandshakePhase = "mosh-client";
+
+  if (process.platform !== "win32") {
+    const decoder = new StringDecoder("utf8");
+    const sentry = createZmodemSentry({
+      sessionId,
+      onData(buf) {
+        const str = decoder.write(buf);
+        if (!str) return;
+        trackSessionIdlePrompt(session, str);
+        bufferData(str);
+        sessionLogStreamManager.appendData(sessionId, str);
+      },
+      writeToRemote(buf) {
+        try { return mcPty.write(buf); } catch { return true; }
+      },
+      getWebContents() { return electronModule.webContents.fromId(session.webContentsId); },
+      protocolLabel: "Mosh",
+    });
+    session.zmodemSentry = sentry;
+    mcPty.onData((data) => sentry.consume(data));
+  } else {
+    mcPty.onData((data) => {
+      const str = data.toString("utf8");
+      trackSessionIdlePrompt(session, str);
+      bufferData(str);
+      sessionLogStreamManager.appendData(sessionId, str);
+    });
+  }
+
+  mcPty.onExit(({ exitCode, signal }) => {
+    if (sessions.get(sessionId) !== session || session.closed) {
+      return;
+    }
+    flush();
+    sessionLogStreamManager.stopStream(sessionId);
+    const contents = electronModule.webContents.fromId(session.webContentsId);
+    contents?.send("netcatty:exit", {
+      sessionId,
+      exitCode,
+      signal,
+      reason: exitCode !== 0 ? "error" : "exited",
+    });
+    sessions.delete(sessionId);
+  });
+}
+
+function resolveLangFromCharsetForMosh(charset) {
+  if (!charset) return "en_US.UTF-8";
+  const trimmed = String(charset).trim();
+  if (/^utf-?8$/i.test(trimmed) || /^utf8$/i.test(trimmed)) return "en_US.UTF-8";
+  return trimmed;
+}
+
+/**
+ * Start a Mosh session.
+ *
+ * Phase 2 (preferred): when a bare `mosh-client` binary is available
+ * and `ssh` is on the system, drive the handshake in Node and spawn
+ * mosh-client directly — no Perl wrapper, works on Windows.
+ *
+ * Phase 1 fallback (legacy): delegate to the system `mosh` wrapper,
+ * preserved so users with custom mosh setups don't regress.
  */
 async function startMoshSession(event, options) {
+  const optionsEnv = options.env || {};
+  // Program discovery must consider the same PATH the spawned PTY will
+  // receive, including host-level terminal environment overrides.
+  const mergedPathForResolution = Object.prototype.hasOwnProperty.call(optionsEnv, "PATH")
+    ? optionsEnv.PATH
+    : process.env.PATH;
+
+  // Phase 2 path — try first.
+  const bareClient = resolveBareMoshClient(options, { pathOverride: mergedPathForResolution });
+  if (bareClient) {
+    const sshExe = moshHandshake.resolveSshExecutable({
+      findExecutable: (name) => (
+        process.platform === "win32"
+          ? findExecutable(name, { pathOverride: mergedPathForResolution })
+          : resolvePosixExecutable(name, { pathOverride: mergedPathForResolution })
+      ),
+      fileExists: (p) => isExecutableFile(p) || fs.existsSync(p),
+    });
+    if (sshExe) {
+      return startMoshSessionViaHandshake(event, options, { bareClient, sshExe });
+    }
+  }
+
+  // Phase 1 legacy: system `mosh` Perl wrapper.
   const sessionId = options.sessionId || randomUUID();
 
   const cols = options.cols || 80;
   const rows = options.rows || 24;
 
-  let moshCmd = 'mosh';
-  if (process.platform === 'win32') {
-    moshCmd = findExecutable('mosh') || 'mosh.exe';
+  // Resolve the mosh client to an absolute path before spawning. Bare names
+  // rely on the spawn-time PATH search, which on macOS GUI apps is reduced to
+  // `/usr/bin:/bin:/usr/sbin:/sbin` and silently fails for Homebrew installs
+  // (see issue #842). On Windows keep the existing behaviour.
+  //
+  let moshCmd;
+  let resolvedMoshDir = null;
+  // 1. Honor user-supplied moshClientPath (Settings → Terminal → Mosh).
+  //    Strict failure: a missing/non-executable file produces a clear error
+  //    instead of silently falling back, so users notice typos / stale paths.
+  const explicitClient = typeof options.moshClientPath === "string" ? options.moshClientPath.trim() : "";
+  if (explicitClient) {
+    const expanded = expandHomePath(explicitClient);
+    // Reject relative paths up front. validatePath in the renderer is shared
+    // with localShell and resolves bare names through PATH (so "mosh.exe"
+    // would look valid in the UI), but here moshClientPath is taken as a
+    // literal filesystem path and any non-absolute value would be resolved
+    // against the app's cwd and silently fail.
+    if (!path.isAbsolute(expanded)) {
+      throw new Error(
+        `Mosh client path must be absolute: "${explicitClient}". Use Settings → Terminal → Mosh to pick the binary, leave it empty to auto-detect, or enter an absolute path.`,
+      );
+    }
+    if (!isExecutableFile(expanded)) {
+      throw new Error(
+        `Configured Mosh client not usable: ${explicitClient}. Update Settings → Terminal → Mosh, leave it empty to auto-detect, or pick another binary.`,
+      );
+    }
+    moshCmd = path.resolve(expanded);
+    // Always remember the directory so we can extend PATH and locate
+    // mosh-client / ssh helpers regardless of platform — Windows
+    // installs outside %PATH% otherwise can't resolve siblings even
+    // though the wrapper itself runs.
+    resolvedMoshDir = path.dirname(moshCmd);
+  } else if (process.platform === "win32") {
+    // Windows fallback when the Phase-2 handshake can't fire (no
+    // bundled mosh-client on disk and no `ssh` resolvable). Most
+    // packaged Windows installs *do* hit the Phase-2 path because
+    // OpenSSH ships in-box and mosh-client is bundled, so this branch
+    // is hit primarily by dev builds without bundled binaries.
+    const winResolved = findExecutable("mosh");
+    if (winResolved && winResolved !== "mosh" && fs.existsSync(winResolved)) {
+      moshCmd = winResolved;
+      resolvedMoshDir = path.dirname(winResolved);
+    } else {
+      throw new Error(
+        "Mosh prerequisites not detected on Windows. The packaged build " +
+        "ships a bundled mosh-client and uses the in-box OpenSSH client; " +
+        "this dev build is missing one of them. Either install a `mosh` " +
+        "wrapper (Cygwin / WSL) on PATH, point Settings → Terminal → Mosh " +
+        "at an absolute mosh-client.exe / mosh wrapper path, or run a " +
+        "packaged build that includes resources/mosh/win32-x64/mosh-client.exe.",
+      );
+    }
+  } else {
+    const resolved = resolvePosixExecutable("mosh", { pathOverride: mergedPathForResolution });
+    if (!resolved) {
+      const installHint =
+        process.platform === "darwin"
+          ? "macOS: brew install mosh"
+          : "Linux: sudo apt install mosh / sudo dnf install mosh / sudo pacman -S mosh";
+      throw new Error(
+        `Mosh client not found on PATH. Install it (${installHint}) or place the 'mosh' binary somewhere on PATH such as /opt/homebrew/bin or /usr/local/bin. You can also point Settings → Terminal → Mosh at an absolute path.`,
+      );
+    }
+    moshCmd = resolved;
+    resolvedMoshDir = path.dirname(resolved);
   }
 
   const args = [];
-  
+
   if (options.port && options.port !== 22) {
     args.push('--ssh=ssh -p ' + options.port);
   }
@@ -706,7 +1187,7 @@ async function startMoshSession(event, options) {
     args.push('--server=' + options.moshServerPath);
   }
 
-  const userHost = options.username 
+  const userHost = options.username
     ? `${options.username}@${options.hostname}`
     : options.hostname;
   args.push(userHost);
@@ -722,10 +1203,49 @@ async function startMoshSession(event, options) {
 
   const env = {
     ...process.env,
-    ...(options.env || {}),
+    ...optionsEnv,
     TERM: 'xterm-256color',
     LANG: resolveLangFromCharset(options.charset),
   };
+
+  // The mosh wrapper is a Perl script that exec's `mosh-client` (and `ssh`)
+  // by name, so it needs them on PATH. Prepend the resolved mosh's directory
+  // to the env PATH (typical layout: mosh + mosh-client live side by side).
+  // Also point MOSH_CLIENT at the absolute mosh-client when present, so the
+  // wrapper picks it up even if PATH is overridden downstream.
+  if (resolvedMoshDir) {
+    const sep = path.delimiter; // ":" on POSIX, ";" on Win32
+    const existingPath = env.PATH || "";
+    const onPath = existingPath
+      .split(sep)
+      .some((p) => p && path.normalize(p) === path.normalize(resolvedMoshDir));
+    if (!onPath) {
+      env.PATH = existingPath ? `${resolvedMoshDir}${sep}${existingPath}` : resolvedMoshDir;
+    }
+    if (!env.MOSH_CLIENT) {
+      const clientCandidates =
+        process.platform === "win32"
+          ? ["mosh-client.exe", "mosh-client.bat", "mosh-client.cmd", "mosh-client"]
+          : ["mosh-client"];
+      for (const name of clientCandidates) {
+        const candidate = path.join(resolvedMoshDir, name);
+        if (isExecutableFile(candidate)) {
+          env.MOSH_CLIENT = candidate;
+          break;
+        }
+      }
+    }
+  }
+
+  // Prefer the bundled mosh-client over whatever the system mosh wrapper
+  // would otherwise resolve via PATH. We've vendored a known-good build
+  // (see scripts/build-mosh/, .github/workflows/build-mosh-binaries.yml)
+  // so distro skew on libssl / libprotobuf / libncurses can't break a
+  // connection.
+  if (!explicitClient && !env.MOSH_CLIENT) {
+    const bundled = bundledMoshClient();
+    if (bundled) env.MOSH_CLIENT = bundled;
+  }
 
   if (options.agentForwarding && process.env.SSH_AUTH_SOCK) {
     env.SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK;
@@ -1003,6 +1523,8 @@ function writeToSession(event, payload) {
 function resizeSession(event, payload) {
   const session = sessions.get(payload.sessionId);
   if (!session) return;
+  if (Number.isFinite(payload.cols)) session.cols = payload.cols;
+  if (Number.isFinite(payload.rows)) session.rows = payload.rows;
   
   try {
     if (session.stream) {
@@ -1034,6 +1556,7 @@ function resizeSession(event, payload) {
 function closeSession(event, payload) {
   const session = sessions.get(payload.sessionId);
   if (!session) return;
+  session.closed = true;
   
   try {
     session.zmodemSentry?.cancel();
@@ -1093,6 +1616,8 @@ function registerHandlers(ipcMain) {
   ipcMain.handle("netcatty:local:start", startLocalSession);
   ipcMain.handle("netcatty:telnet:start", startTelnetSession);
   ipcMain.handle("netcatty:mosh:start", startMoshSession);
+  ipcMain.handle("netcatty:mosh:detectClient", () => detectMoshClient());
+  ipcMain.handle("netcatty:mosh:pickClient", () => pickMoshClient());
   ipcMain.handle("netcatty:serial:start", startSerialSession);
   ipcMain.handle("netcatty:serial:list", listSerialPorts);
   ipcMain.handle("netcatty:local:defaultShell", getDefaultShell);
@@ -1115,29 +1640,42 @@ function getDefaultShell() {
  * Validate a path - check if it exists and whether it's a file or directory
  * @param {object} event - IPC event
  * @param {object} payload - Contains { path: string, type?: 'file' | 'directory' | 'any' }
- * @returns {{ exists: boolean, isFile: boolean, isDirectory: boolean }}
+ * @returns {{ exists: boolean, isFile: boolean, isDirectory: boolean, isExecutable: boolean }}
+ *
+ * `isExecutable` mirrors isExecutableFile(): POSIX requires the file mode
+ * to have an execute bit; Win32 treats any regular file as executable
+ * (NTFS lacks POSIX bits — extension/PATHEXT decides at spawn time).
+ * Existing callers ignore the new field; consumers that need exec
+ * semantics (e.g. Mosh client path) read it explicitly.
  */
+function statIsExecutable(stat) {
+  if (!stat || !stat.isFile()) return false;
+  if (process.platform === "win32") return true;
+  return (stat.mode & 0o111) !== 0;
+}
+
 function validatePath(event, payload) {
   const targetPath = payload?.path;
   const type = payload?.type || 'any';
   if (!targetPath) {
-    return { exists: false, isFile: false, isDirectory: false };
+    return { exists: false, isFile: false, isDirectory: false, isExecutable: false };
   }
-  
+
   try {
     // Resolve path (handle ~, etc.)
     let resolvedPath = expandHomePath(targetPath);
     resolvedPath = path.resolve(resolvedPath);
-    
+
     if (fs.existsSync(resolvedPath)) {
       const stat = fs.statSync(resolvedPath);
       return {
         exists: true,
         isFile: stat.isFile(),
         isDirectory: stat.isDirectory(),
+        isExecutable: statIsExecutable(stat),
       };
     }
-    
+
     // If type is 'file' and path doesn't exist, try to resolve via PATH (for executables like cmd.exe, powershell.exe)
     if (type === 'file') {
       const resolvedExecutable = findExecutable(targetPath);
@@ -1148,6 +1686,7 @@ function validatePath(event, payload) {
           exists: true,
           isFile: stat.isFile(),
           isDirectory: stat.isDirectory(),
+          isExecutable: statIsExecutable(stat),
         };
       }
       // Also try with .exe extension on Windows if not already present
@@ -1159,16 +1698,127 @@ function validatePath(event, payload) {
             exists: true,
             isFile: stat.isFile(),
             isDirectory: stat.isDirectory(),
+            isExecutable: statIsExecutable(stat),
           };
         }
       }
     }
-    
-    return { exists: false, isFile: false, isDirectory: false };
+
+    return { exists: false, isFile: false, isDirectory: false, isExecutable: false };
   } catch (err) {
     console.warn(`[Terminal] Error validating path "${targetPath}":`, err.message);
-    return { exists: false, isFile: false, isDirectory: false };
+    return { exists: false, isFile: false, isDirectory: false, isExecutable: false };
   }
+}
+
+/**
+ * Locate the mosh-client binary bundled by electron-builder via
+ * `extraResources` (see electron-builder.config.cjs and
+ * .github/workflows/build-mosh-binaries.yml).
+ *
+ * Returns an absolute path when the binary is on disk, otherwise null.
+ * In dev / non-packaged runs the path is computed against the project
+ * root so the helper is testable without packaging the app.
+ *
+ * Note this returns the network-protocol `mosh-client`, not the `mosh`
+ * wrapper script. POSIX platforms still rely on a system `mosh` Perl
+ * wrapper to orchestrate the SSH bootstrap; the bundled binary is wired
+ * into that wrapper via `MOSH_CLIENT=<bundled>` so users get a known-good
+ * client instead of whatever the distro happens to ship.
+ */
+function bundledMoshClient(opts = {}) {
+  const isWin = (opts.platform || process.platform) === "win32";
+  const basename = isWin ? "mosh-client.exe" : "mosh-client";
+
+  // Packaged: <Resources>/mosh/mosh-client[.exe]
+  const resourcesPath = opts.resourcesPath || process.resourcesPath;
+  if (resourcesPath) {
+    const packaged = path.join(resourcesPath, "mosh", basename);
+    if (fs.existsSync(packaged) && isExecutableFile(packaged)) return packaged;
+  }
+
+  // Dev fallback: resources/mosh/<platform-arch>/mosh-client[.exe] under
+  // the project root. Useful for `npm run start` after running
+  // `npm run fetch:mosh` locally.
+  const projectRoot = opts.projectRoot || path.resolve(__dirname, "..", "..");
+  const platform = opts.platform || process.platform;
+  const arch = opts.arch || process.arch;
+  const candidates = [];
+  if (platform === "darwin") {
+    candidates.push(path.join(projectRoot, "resources", "mosh", "darwin-universal", basename));
+  } else {
+    candidates.push(path.join(projectRoot, "resources", "mosh", `${platform}-${arch}`, basename));
+  }
+  for (const c of candidates) {
+    if (fs.existsSync(c) && isExecutableFile(c)) return c;
+  }
+  return null;
+}
+
+/**
+ * Run the same auto-discovery startMoshSession uses, surfacing the result
+ * (and the search list when nothing was found) to the Settings UI.
+ */
+function detectMoshClient() {
+  if (process.platform === "win32") {
+    const resolved = findExecutable("mosh");
+    const found = !!resolved && resolved !== "mosh" && fs.existsSync(resolved);
+    return {
+      platform: "win32",
+      found,
+      path: found ? resolved : null,
+      searchedPaths: [],
+    };
+  }
+  const dirs = [];
+  const seen = new Set();
+  for (const dir of (process.env.PATH || "").split(":")) {
+    if (dir && !seen.has(dir)) { seen.add(dir); dirs.push(dir); }
+  }
+  for (const dir of POSIX_EXTRA_PATH_DIRS) {
+    if (!seen.has(dir)) { seen.add(dir); dirs.push(dir); }
+  }
+  const home = process.env.HOME;
+  if (home) {
+    for (const sub of [".nix-profile/bin", ".cargo/bin", ".local/bin"]) {
+      const dir = path.join(home, sub);
+      if (!seen.has(dir)) { seen.add(dir); dirs.push(dir); }
+    }
+  }
+  const resolved = resolvePosixExecutable("mosh");
+  return {
+    platform: process.platform,
+    found: !!resolved,
+    path: resolved,
+    searchedPaths: dirs,
+  };
+}
+
+/**
+ * Open a native file picker so the user can select a Mosh client binary.
+ * Returns { canceled, filePath } so the renderer can decide what to do.
+ */
+async function pickMoshClient() {
+  const { dialog, BrowserWindow } = electronModule || {};
+  if (!dialog) {
+    return { canceled: true, filePath: null };
+  }
+  const win = BrowserWindow?.getFocusedWindow?.() || undefined;
+  const isWin = process.platform === "win32";
+  const result = await dialog.showOpenDialog(win, {
+    title: "Select Mosh client",
+    properties: ["openFile", "showHiddenFiles"],
+    filters: isWin
+      ? [
+          { name: "Executables", extensions: ["exe", "bat", "cmd"] },
+          { name: "All Files", extensions: ["*"] },
+        ]
+      : [{ name: "All Files", extensions: ["*"] }],
+  });
+  if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+    return { canceled: true, filePath: null };
+  }
+  return { canceled: false, filePath: result.filePaths[0] };
 }
 
 /**
@@ -1220,6 +1870,10 @@ module.exports = {
   startLocalSession,
   startTelnetSession,
   startMoshSession,
+  detectMoshClient,
+  bundledMoshClient,
+  resolveBareMoshClient,
+  pickMoshClient,
   startSerialSession,
   listSerialPorts,
   writeToSession,
