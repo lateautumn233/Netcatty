@@ -217,7 +217,7 @@ function chmodExecutable(filePath) {
 function parseMoshBinRepository(env) {
   const githubOwner = (env.GITHUB_REPOSITORY || "").split("/")[0];
   return {
-    owner: env.MOSH_BIN_OWNER || githubOwner || "binaricat",
+    owner: "binaricat",
     repo: env.MOSH_BIN_REPO || "Netcatty-mosh-bin",
   };
 }
