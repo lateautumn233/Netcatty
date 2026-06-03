@@ -32,7 +32,7 @@ function validateReleaseTag(tag) {
 }
 
 function parseRepository(env) {
-  const owner = env.ET_BIN_OWNER || (env.GITHUB_REPOSITORY || "").split("/")[0] || "binaricat";
+  const owner = env.ET_BIN_OWNER || (env.GITHUB_REPOSITORY || "").split("/")[0] || "lateautumn233";
   const repo = env.ET_BIN_REPO || "Netcatty-et-bin";
   return { owner, repo };
 }
