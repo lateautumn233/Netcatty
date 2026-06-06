@@ -1016,6 +1016,7 @@ const {
   restoreRemoteModes,
   listSessionDir,
   getServerStats,
+  readRemoteHistory,
   setSessionEncoding,
 } = sessionOpsApi;
 
@@ -1030,6 +1031,7 @@ function registerHandlers(ipcMain) {
   ipcMain.handle("netcatty:ssh:distroInfo", getSessionDistroInfo);
   ipcMain.handle("netcatty:ssh:listdir", listSessionDir);
   ipcMain.handle("netcatty:ssh:stats", getServerStats);
+  ipcMain.handle("netcatty:ssh:readRemoteHistory", readRemoteHistory);
   ipcMain.handle("netcatty:key:generate", generateKeyPair);
   ipcMain.handle("netcatty:ssh:setEncoding", setSessionEncoding);
   ipcMain.handle("netcatty:sshDebugLog:info", getSshDebugLogInfo);

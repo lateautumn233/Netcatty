@@ -145,6 +145,20 @@ declare global {
       stderr?: string;
       error?: string;
     }>;
+    /**
+     * Read the remote shell history from an active SSH/ET session on a
+     * separate exec channel (the interactive shell is untouched). Detects the
+     * remote login shell and tails only the matching history file; `shell`
+     * tells the caller which section(s) were populated.
+     */
+    readRemoteHistory?(sessionId: string, limit?: number): Promise<{
+      success: boolean;
+      shell?: 'bash' | 'zsh' | 'fish' | 'unknown';
+      bash?: string;
+      zsh?: string;
+      fish?: string;
+      error?: string;
+    }>;
     /** Get server stats (CPU, Memory, Disk, Network) from an active SSH session */
     getServerStats?(sessionId: string): Promise<{
       success: boolean;
