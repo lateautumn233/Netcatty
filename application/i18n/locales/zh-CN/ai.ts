@@ -229,6 +229,7 @@ export const zhCNAiMessages: Messages = {
   'terminal.layer.sftp': '文件传输',
   'terminal.layer.scripts': '脚本',
   'terminal.layer.theme': '主题',
+  'terminal.layer.history': '命令历史',
   'terminal.layer.aiChat': 'AI 助手',
   'terminal.layer.movePanelLeft': '面板移至左侧',
   'terminal.layer.movePanelRight': '面板移至右侧',

@@ -2,6 +2,18 @@ import type { Messages } from '../types';
 
 export const ruTerminalMessages: Messages = {
   'terminal.sudoHint.pressEnter': 'Нажмите Enter, чтобы вставить пароль sudo',
+  // Remote command history side panel
+  'terminal.toolbar.history': 'История команд',
+  'history.searchPlaceholder': 'Поиск по истории...',
+  'history.loading': 'Загрузка удалённой истории...',
+  'history.meta.count': '{count} команд',
+  'history.empty.noSession': 'Откройте удалённую сессию, чтобы просмотреть историю команд.',
+  'history.empty.unsupportedProtocol': 'История команд доступна только для сессий SSH/Mosh/ET.',
+  'history.empty.noHistory': 'История команд на этом хосте не найдена.',
+  'history.action.refresh': 'Обновить',
+  'history.action.retry': 'Повторить',
+  'history.action.paste': 'Вставить в терминал',
+  'history.action.saveAsSnippet': 'Сохранить как сниппет',
   // Connection logs
   'logs.table.date': 'Дата',
   'logs.table.user': 'Пользователь',

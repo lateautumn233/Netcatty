@@ -51,6 +51,7 @@ function TerminalLayerWorkspaceSectionInner({ ctx }: { ctx: WorkspaceContext }) 
     handleTerminalCwdChange,
     handleOpenScripts,
     handleOpenTheme,
+    handleOpenHistory,
     handleCloseSession,
     handleStatusChange,
     handleSessionExit,
@@ -158,6 +159,7 @@ function TerminalLayerWorkspaceSectionInner({ ctx }: { ctx: WorkspaceContext }) 
           onTerminalCwdChange={handleTerminalCwdChange}
           onOpenScripts={handleOpenScripts}
           onOpenTheme={handleOpenTheme}
+          onOpenHistory={handleOpenHistory}
           onCloseSession={handleCloseSession}
           onStatusChange={handleStatusChange}
           onSessionExit={handleSessionExit}

@@ -19,7 +19,7 @@ import {
   parseTerminalPaneRenderSnapshot,
 } from '../terminalPaneVisibility';
 
-export type SidePanelTab = 'sftp' | 'scripts' | 'theme' | 'ai';
+export type SidePanelTab = 'sftp' | 'scripts' | 'history' | 'theme' | 'ai';
 
 export type WorkspaceRect = { x: number; y: number; w: number; h: number };
 
@@ -566,6 +566,7 @@ interface TerminalPaneProps {
   onTerminalCwdChange: (sessionId: string, cwd: string | null) => void;
   onOpenScripts: () => void;
   onOpenTheme: () => void;
+  onOpenHistory?: () => void;
   onCloseSession: (sessionId: string) => void;
   onStatusChange: (sessionId: string, status: TerminalSession['status']) => void;
   onSessionExit: (sessionId: string, evt: TerminalSessionExitEvent) => void;
@@ -653,6 +654,7 @@ const terminalPanePropsAreEqual = (
   prev.onTerminalCwdChange === next.onTerminalCwdChange &&
   prev.onOpenScripts === next.onOpenScripts &&
   prev.onOpenTheme === next.onOpenTheme &&
+  prev.onOpenHistory === next.onOpenHistory &&
   prev.onCloseSession === next.onCloseSession &&
   prev.onStatusChange === next.onStatusChange &&
   prev.onSessionExit === next.onSessionExit &&
@@ -707,6 +709,7 @@ const TerminalPane: React.FC<TerminalPaneProps> = memo(({
   onTerminalCwdChange,
   onOpenScripts,
   onOpenTheme,
+  onOpenHistory,
   onCloseSession,
   onStatusChange,
   onSessionExit,
@@ -881,6 +884,7 @@ const TerminalPane: React.FC<TerminalPaneProps> = memo(({
         onTerminalCwdChange={onTerminalCwdChange}
         onOpenScripts={onOpenScripts}
         onOpenTheme={onOpenTheme}
+        onOpenHistory={onOpenHistory}
         onCloseSession={onCloseSession}
         onStatusChange={onStatusChange}
         onSessionExit={onSessionExit}
@@ -945,6 +949,7 @@ interface TerminalPanesHostProps {
   onTerminalCwdChange: TerminalPaneProps['onTerminalCwdChange'];
   onOpenScripts: () => void;
   onOpenTheme: () => void;
+  onOpenHistory?: () => void;
   onCloseSession: (sessionId: string) => void;
   onStatusChange: (sessionId: string, status: TerminalSession['status']) => void;
   onSessionExit: (sessionId: string, evt: TerminalSessionExitEvent) => void;

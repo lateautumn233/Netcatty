@@ -229,6 +229,7 @@ export const enAiMessages: Messages = {
   'terminal.layer.sftp': 'SFTP',
   'terminal.layer.scripts': 'Scripts',
   'terminal.layer.theme': 'Theme',
+  'terminal.layer.history': 'History',
   'terminal.layer.aiChat': 'AI Chat',
   'terminal.layer.movePanelLeft': 'Move panel to left',
   'terminal.layer.movePanelRight': 'Move panel to right',

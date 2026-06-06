@@ -229,6 +229,7 @@ export const ruAiMessages: Messages = {
   'terminal.layer.sftp': 'SFTP',
   'terminal.layer.scripts': 'Скрипты',
   'terminal.layer.theme': 'Тема',
+  'terminal.layer.history': 'История',
   'terminal.layer.aiChat': 'AI-чат',
   'terminal.layer.movePanelLeft': 'Переместить панель влево',
   'terminal.layer.movePanelRight': 'Переместить панель вправо',

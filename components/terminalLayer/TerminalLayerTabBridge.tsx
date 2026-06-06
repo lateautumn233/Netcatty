@@ -128,6 +128,17 @@ export function TerminalLayerTabBridge({ stableRef }: { stableRef: StableRef }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linkedTerminalSessionIdForSftp, s.terminalCwdRevision]);
 
+  // Session + host backing the focused terminal — drives the remote command
+  // history panel regardless of whether SFTP is open for the current tab.
+  const historySessionId = (activeWorkspace ? focusedSessionId : activeSession?.id) ?? null;
+  const focusedHost = useMemo((): Host | null => {
+    if (!historySessionId) return null;
+    return sessionHostsMap.get(historySessionId) ?? null;
+  }, [historySessionId, sessionHostsMap]);
+  // Resolved history state for the focused host: changes identity when that
+  // host's history is (re)fetched, so it can drive the ctx memo below.
+  const focusedHostHistoryState = s.remoteHistory?.getState(focusedHost?.id ?? null);
+
   const themeState = useTerminalThemePanelState({
     accentMode: s.accentMode,
     activeSession,
@@ -272,9 +283,15 @@ export function TerminalLayerTabBridge({ stableRef }: { stableRef: StableRef }) 
     focusedFontSizeOverridden: themeState.focusedFontSizeOverridden,
     focusedFontWeight: themeState.focusedFontWeight,
     focusedFontWeightOverridden: themeState.focusedFontWeightOverridden,
+    focusedHost,
     focusedSessionId,
     focusedThemeOverridden: themeState.focusedThemeOverridden,
     FolderTree: s.FolderTree,
+    History: s.History,
+    historySessionId,
+    HistorySidePanel: s.HistorySidePanel,
+    handleHistoryPaste: s.handleHistoryPaste,
+    handleOpenHistory: s.handleOpenHistory,
     followAppTerminalTheme: s.followAppTerminalTheme,
     fontSize: s.fontSize,
     getTerminalCwd: s.getTerminalCwd,
@@ -347,6 +364,7 @@ export function TerminalLayerTabBridge({ stableRef }: { stableRef: StableRef }) 
     previewedOrVisibleThemeId: themeState.previewedOrVisibleThemeId,
     refocusActiveTerminalSession: s.refocusActiveTerminalSession,
     refocusTerminalSession: s.refocusTerminalSession,
+    remoteHistory: s.remoteHistory,
     resizing,
     resolveAIExecutorContext,
     resolvedPreviewTheme: themeState.resolvedPreviewTheme,
@@ -417,8 +435,11 @@ export function TerminalLayerTabBridge({ stableRef }: { stableRef: StableRef }) 
     aiContextsByTabId,
     computeSplitHint,
     dropHint,
+    focusedHost,
+    focusedHostHistoryState,
     focusedSessionId,
     handleWorkspaceDrop,
+    historySessionId,
     isFocusMode,
     isSidePanelOpenForCurrentTab,
     isTerminalLayerVisible,

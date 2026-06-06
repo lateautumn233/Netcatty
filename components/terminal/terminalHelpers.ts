@@ -148,6 +148,7 @@ export interface TerminalProps {
   onTerminalCwdChange?: (sessionId: string, cwd: string | null) => void;
   onOpenScripts?: () => void;
   onOpenTheme?: () => void;
+  onOpenHistory?: () => void;
   isBroadcastEnabled?: boolean;
   onToggleBroadcast?: () => void;
   onToggleComposeBar?: () => void;

@@ -132,6 +132,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
   onTerminalCwdChange,
   onOpenScripts,
   onOpenTheme,
+  onOpenHistory,
   isBroadcastEnabled,
   onToggleBroadcast,
   onToggleComposeBar,
@@ -1074,6 +1075,7 @@ const TerminalComponent: React.FC<TerminalProps> = ({
       onOpenSFTP={handleOpenSFTP}
       onOpenScripts={onOpenScripts ?? (() => {})}
       onOpenTheme={onOpenTheme ?? (() => {})}
+      onOpenHistory={onOpenHistory}
       onUpdateHost={onUpdateHost}
       showClose={opts?.showClose}
       onClose={() => onCloseSession?.(sessionId)}
