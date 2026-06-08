@@ -48,7 +48,7 @@ test("buildSshHandshakeCommand omits -t and uses default port", () => {
   assert.deepEqual(got.args, [
     "alice@example.com",
     "--",
-    "LC_ALL='en_US.UTF-8' mosh-server new -s",
+    "env LC_ALL='en_US.UTF-8' mosh-server new -s",
   ]);
 });
 
@@ -63,7 +63,7 @@ test("buildSshHandshakeCommand interpolates lang and moshServer overrides", () =
     lang: "zh_CN.UTF-8",
     moshServer: "/opt/mosh/bin/mosh-server new -s -c 256",
   });
-  assert.equal(got.args.at(-1), "LC_ALL='zh_CN.UTF-8' /opt/mosh/bin/mosh-server new -s -c 256");
+  assert.equal(got.args.at(-1), "env LC_ALL='zh_CN.UTF-8' /opt/mosh/bin/mosh-server new -s -c 256");
 });
 
 test("buildSshHandshakeCommand shell-quotes lang values", () => {
@@ -71,7 +71,7 @@ test("buildSshHandshakeCommand shell-quotes lang values", () => {
     host: "h",
     lang: "C; touch /tmp/netcatty-owned",
   });
-  assert.equal(got.args.at(-1), "LC_ALL='C; touch /tmp/netcatty-owned' mosh-server new -s");
+  assert.equal(got.args.at(-1), "env LC_ALL='C; touch /tmp/netcatty-owned' mosh-server new -s");
 });
 
 test("buildMoshServerCommand treats custom server input as a path", () => {

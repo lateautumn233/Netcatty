@@ -146,7 +146,7 @@ function parseMoshConnect(buffer) {
 /**
  * Build the argv for the ssh bootstrap command.
  *
- *   ssh -t [-p port] [user@]host -- LC_ALL=... mosh-server new -s [...]
+ *   ssh -t [-p port] [user@]host -- env LC_ALL=... mosh-server new -s [...]
  *
  * `-t` allocates a remote TTY so password / 2FA prompts work; `--`
  * separates ssh's options from the remote command we want it to run.
@@ -179,13 +179,12 @@ function buildSshHandshakeCommand(opts) {
   const target = opts.username ? `${opts.username}@${opts.host}` : opts.host;
   args.push(target);
   args.push("--");
-  // Quote the remote command minimally — ssh runs it through the
-  // remote shell so simple "command arg arg" works without shell
-  // metacharacters from us. mosh-server prints the magic CONNECT line
-  // and otherwise stays silent.
+  // Quote the remote command minimally — ssh runs it through the remote
+  // shell. Use `env LC_ALL=... command` instead of POSIX-only
+  // `LC_ALL=... command` so fish login shells can parse the bootstrap too.
   const lang = opts.lang || "en_US.UTF-8";
   const moshServer = opts.moshServer || "mosh-server new -s";
-  args.push(`LC_ALL=${shellQuote(lang)} ${moshServer}`);
+  args.push(`env LC_ALL=${shellQuote(lang)} ${moshServer}`);
   return { command: "ssh", args };
 }
 

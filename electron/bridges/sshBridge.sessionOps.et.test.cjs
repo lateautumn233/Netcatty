@@ -59,6 +59,7 @@ test("getSessionDistroInfo probes ET sessions through execOnEtSession", async ()
 
   assert.equal(result.success, true);
   assert.equal(result.stdout, "NAME=Ubuntu\n");
+  assert.match(command, /^exec sh -c /);
   assert.match(command, /os-release/);
 });
 
@@ -125,6 +126,7 @@ test("getServerStats falls back to execOnEtSession for jumped ET sessions", asyn
   const result = await api.getServerStats(null, { sessionId: "et-1" });
 
   assert.equal(ensureCalls, 0);
+  assert.match(command, /^exec sh -c /);
   assert.match(command, /CPURAW|UNSUPPORTED_OS/);
   assert.equal(result.success, true);
   assert.equal(result.stats.memTotal, 8000);

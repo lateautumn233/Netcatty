@@ -1,5 +1,11 @@
 /* eslint-disable no-undef */
+function fallbackQuoteShellArg(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 function createSessionOpsApi(ctx) {
+  const quoteForRemoteShell =
+    typeof ctx.quoteShellArg === "function" ? ctx.quoteShellArg : fallbackQuoteShellArg;
   with (ctx) {
     async function getSessionRemoteInfo(_event, payload) {
       const { sessionId } = payload || {};
@@ -33,15 +39,20 @@ function createSessionOpsApi(ctx) {
         if (typeof execOnEtSession !== "function") {
           return { success: false, error: "ET command executor unavailable" };
         }
-        return execOnEtSession(session, "cat /etc/os-release 2>/dev/null || uname -a", 5000, {
-          requireTrustedHost: true,
-          knownHosts: session.etStatsAuth?.knownHosts,
-        });
+        return execOnEtSession(
+          session,
+          `exec sh -c ${quoteForRemoteShell("cat /etc/os-release 2>/dev/null || uname -a")}`,
+          5000,
+          {
+            requireTrustedHost: true,
+            knownHosts: session.etStatsAuth?.knownHosts,
+          },
+        );
       }
       if (!session || !session.conn) {
         return { success: false, error: 'Session not found or not connected' };
       }
-      const command = "cat /etc/os-release 2>/dev/null || uname -a";
+      const command = `exec sh -c ${quoteForRemoteShell("cat /etc/os-release 2>/dev/null || uname -a")}`;
       return new Promise((resolve) => {
         let settled = false;
         const settle = (result) => {
@@ -217,7 +228,7 @@ function createSessionOpsApi(ctx) {
       const { sessionId } = payload;
       const allowHomeFallback = payload?.allowHomeFallback !== false;
       const session = sessions.get(sessionId);
-    
+
       if (!session || !session.conn) {
         return { success: false, error: 'Session not found or not connected' };
       }
@@ -542,7 +553,7 @@ function createSessionOpsApi(ctx) {
         const cwdResolveCmd = needsCwdResolve
           ? `_sc_p=$(ps --ppid $PPID -o pid=,comm= 2>/dev/null | awk -v self=$$ '$1!=self && $2~/^(ba|z|fi|k|da)?sh$/{pid=$1}END{print pid}'); [ -z "$_sc_p" ] && _sc_p=$(ps -e -o pid=,ppid=,comm= 2>/dev/null | awk -v pp=$PPID -v self=$$ '$1!=self && $2==pp && $3~/^(ba|z|fi|k|da)?sh$/{pid=$1}END{print pid}'); [ -n "$_sc_p" ] && { _sc_d=$(readlink /proc/$_sc_p/cwd 2>/dev/null); [ -n "$_sc_d" ] && cd "$_sc_d" 2>/dev/null; }; `
           : '';
-        const cmd = `${cwdResolveCmd}find ${pathExpr} -mindepth 1 -maxdepth 1 -exec sh -c '
+        const posixScript = `${cwdResolveCmd}find ${pathExpr} -mindepth 1 -maxdepth 1 -exec sh -c '
           prefix="$1"
           folders_only="$2"
           limit="$3"
@@ -574,6 +585,7 @@ function createSessionOpsApi(ctx) {
             fi
           done
         ' sh '${safePrefix}' ${foldersOnly ? 1 : 0} ${maxEntries} {} + 2>/dev/null`;
+        const cmd = `exec sh -c ${quoteForRemoteShell(posixScript)}`;
     
         session.conn.exec(cmd, (err, stream) => {
           if (err) {
@@ -784,7 +796,8 @@ function createSessionOpsApi(ctx) {
       ].join('; ');
     
       // Auto-detect OS via uname — only Linux and macOS are supported
-      const statsCommand = `ostype=$(uname -s 2>/dev/null || echo "Unknown"); if [ "$ostype" = "Darwin" ]; then ${macosStatsCommand}; elif [ "$ostype" = "Linux" ]; then ${linuxStatsCommand}; else echo "UNSUPPORTED_OS:$ostype"; fi`;
+      const statsScript = `ostype=$(uname -s 2>/dev/null || echo "Unknown"); if [ "$ostype" = "Darwin" ]; then ${macosStatsCommand}; elif [ "$ostype" = "Linux" ]; then ${linuxStatsCommand}; else echo "UNSUPPORTED_OS:$ostype"; fi`;
+      const statsCommand = `exec sh -c ${quoteForRemoteShell(statsScript)}`;
       return new Promise((resolve) => {
         const timeout = setTimeout(() => {
           resolve({ success: false, error: 'Timeout getting server stats' });

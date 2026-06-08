@@ -17,9 +17,10 @@ function fakeStream(stdout) {
 
 // A fake connection whose exec() always returns the same canned Linux stats
 // line so getServerStats parses a successful result.
-function fakeConn(stdout) {
+function fakeConn(stdout, onExec) {
   return {
-    exec(_command, cb) {
+    exec(command, cb) {
+      if (onExec) onExec(command);
       cb(null, fakeStream(stdout));
     },
   };
@@ -49,6 +50,7 @@ test("getServerStats opens a Mosh stats companion connection when session.conn i
   sessions.set("sid", session);
 
   let ensureCalls = 0;
+  let command = "";
   const api = createSessionOpsApi({
     get sessions() {
       return sessions;
@@ -62,7 +64,7 @@ test("getServerStats opens a Mosh stats companion connection when session.conn i
       assert.equal(id, "sid");
       // Simulate a successful companion connection. The real helper stores it
       // on moshStatsConn (NOT conn) so it stays invisible to other bridges.
-      s.moshStatsConn = fakeConn(LINUX_STATS);
+      s.moshStatsConn = fakeConn(LINUX_STATS, (cmd) => { command = cmd; });
       return s.moshStatsConn;
     },
   });
@@ -72,6 +74,8 @@ test("getServerStats opens a Mosh stats companion connection when session.conn i
   assert.equal(ensureCalls, 1);
   // session.conn must remain unset — only moshStatsConn carries the companion.
   assert.equal(session.conn, undefined);
+  assert.match(command, /^exec sh -c /);
+  assert.match(command, /CPURAW|UNSUPPORTED_OS/);
   assert.equal(result.success, true);
   assert.equal(result.stats.memTotal, 8000);
   assert.equal(result.stats.cpuCores, 4);
@@ -100,7 +104,8 @@ test("getServerStats fails gracefully when the companion connection cannot be es
 
 test("getServerStats does not touch the companion path for a normal SSH session", async () => {
   const sessions = new Map();
-  const session = { type: "ssh", conn: fakeConn(LINUX_STATS) };
+  let command = "";
+  const session = { type: "ssh", conn: fakeConn(LINUX_STATS, (cmd) => { command = cmd; }) };
   sessions.set("sid", session);
 
   let ensureCalls = 0;
@@ -120,6 +125,8 @@ test("getServerStats does not touch the companion path for a normal SSH session"
   const result = await api.getServerStats({ sender: {} }, { sessionId: "sid" });
 
   assert.equal(ensureCalls, 0);
+  assert.match(command, /^exec sh -c /);
+  assert.match(command, /CPURAW|UNSUPPORTED_OS/);
   assert.equal(result.success, true);
 });
 
@@ -182,4 +189,27 @@ test("getServerStats returns an error for an unknown session", async () => {
   const result = await api.getServerStats({ sender: {} }, { sessionId: "missing" });
 
   assert.equal(result.success, false);
+});
+
+test("listSessionDir wraps the POSIX listing script for fish login shells", async () => {
+  const sessions = new Map();
+  let command = "";
+  sessions.set("sid", {
+    conn: fakeConn("src\0directory\0README.md\0file\0", (cmd) => { command = cmd; }),
+  });
+  const api = makeSessionOps(sessions);
+
+  const result = await api.listSessionDir(null, {
+    sessionId: "sid",
+    path: ".",
+    foldersOnly: false,
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(result.entries, [
+    { name: "src", type: "directory" },
+    { name: "README.md", type: "file" },
+  ]);
+  assert.match(command, /^exec sh -c /);
+  assert.match(command, /find/);
 });
